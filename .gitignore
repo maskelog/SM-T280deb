@@ -1,0 +1,14 @@
+# Downloaded sources and build output
+/downloads/
+/out/
+# Never commit device dumps, proprietary blobs, keys or logs
+*.img
+*.tar.gz
+*.cpio.gz
+/blobs/
+*.pem
+*.key
+id_*
+*_ed25519*
+last_kmsg*
+*.log

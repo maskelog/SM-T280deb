@@ -1,0 +1,232 @@
+--- a/drivers/staging/android/binder.c
++++ b/drivers/staging/android/binder.c
+@@ -29,6 +29,7 @@
+ #include <linux/module.h>
+ #include <linux/mutex.h>
+ #include <linux/rtmutex.h>
++#include <linux/ratelimit.h>
+ #include <linux/nsproxy.h>
+ #include <linux/poll.h>
+ #include <linux/debugfs.h>
+@@ -484,6 +485,14 @@
+ 	trace_binder_unlock(tag);
+ 	rt_mutex_unlock(&context->binder_main_lock);
+ 	preempt_enable();
++}
++
++/* Preserve EFAULT while identifying the failing access path. */
++static int binder_user_fault(int line)
++{
++	pr_err_ratelimited("user fault line=%d pid=%d tid=%d comm=%s preempt=%x\n",
++		line, current->tgid, current->pid, current->comm, preempt_count());
++	return -EFAULT;
+ }
+ 
+ static inline void *kzalloc_preempt_disabled(size_t size)
+@@ -2348,7 +2357,7 @@
+ 
+ 	while (ptr < end && thread->return_error == BR_OK) {
+ 		if (get_user_preempt_disabled(cmd, (uint32_t __user *)ptr))
+-			return -EFAULT;
++			return binder_user_fault(__LINE__);
+ 		ptr += sizeof(uint32_t);
+ 		trace_binder_command(cmd);
+ 		if (_IOC_NR(cmd) < ARRAY_SIZE(context->binder_stats.bc)) {
+@@ -2366,7 +2375,7 @@
+ 			const char *debug_string;
+ 
+ 			if (get_user_preempt_disabled(target, (uint32_t __user *)ptr))
+-				return -EFAULT;
++				return binder_user_fault(__LINE__);
+ 			ptr += sizeof(uint32_t);
+ 			if (target == 0 && context->binder_context_mgr_node &&
+ 			    (cmd == BC_INCREFS || cmd == BC_ACQUIRE)) {
+@@ -2418,10 +2427,10 @@
+ 			struct binder_node *node;
+ 
+ 			if (get_user_preempt_disabled(node_ptr, (binder_uintptr_t __user *)ptr))
+-				return -EFAULT;
++				return binder_user_fault(__LINE__);
+ 			ptr += sizeof(binder_uintptr_t);
+ 			if (get_user_preempt_disabled(cookie, (binder_uintptr_t __user *)ptr))
+-				return -EFAULT;
++				return binder_user_fault(__LINE__);
+ 			ptr += sizeof(binder_uintptr_t);
+ 			node = binder_get_node(proc, node_ptr);
+ 			if (node == NULL) {
+@@ -2479,7 +2488,7 @@
+ 			struct binder_buffer *buffer;
+ 
+ 			if (get_user_preempt_disabled(data_ptr, (binder_uintptr_t __user *)ptr))
+-				return -EFAULT;
++				return binder_user_fault(__LINE__);
+ 			ptr += sizeof(binder_uintptr_t);
+ 
+ 			buffer = binder_buffer_lookup(proc, data_ptr);
+@@ -2522,7 +2531,7 @@
+ 
+ 			if (copy_from_user_preempt_disabled(&tr, ptr,
+ 							    sizeof(tr)))
+-				return -EFAULT;
++				return binder_user_fault(__LINE__);
+ 			ptr += sizeof(tr);
+ 			binder_transaction(proc, thread, &tr.transaction_data,
+ 					   cmd == BC_REPLY_SG, tr.buffers_size);
+@@ -2533,7 +2542,7 @@
+ 			struct binder_transaction_data tr;
+ 
+ 			if (copy_from_user_preempt_disabled(&tr, ptr, sizeof(tr)))
+-				return -EFAULT;
++				return binder_user_fault(__LINE__);
+ 			ptr += sizeof(tr);
+ 			binder_transaction(proc, thread, &tr,
+ 					   cmd == BC_REPLY, 0);
+@@ -2584,10 +2593,10 @@
+ 			struct binder_ref_death *death;
+ 
+ 			if (get_user_preempt_disabled(target, (uint32_t __user *)ptr))
+-				return -EFAULT;
++				return binder_user_fault(__LINE__);
+ 			ptr += sizeof(uint32_t);
+ 			if (get_user_preempt_disabled(cookie, (binder_uintptr_t __user *)ptr))
+-				return -EFAULT;
++				return binder_user_fault(__LINE__);
+ 			ptr += sizeof(binder_uintptr_t);
+ 			ref = binder_get_ref(proc, target, false);
+ 			if (ref == NULL) {
+@@ -2671,7 +2680,7 @@
+ 			struct binder_ref_death *death = NULL;
+ 
+ 			if (get_user_preempt_disabled(cookie, (binder_uintptr_t __user *)ptr))
+-				return -EFAULT;
++				return binder_user_fault(__LINE__);
+ 
+ 			ptr += sizeof(cookie);
+ 			list_for_each_entry(w, &proc->delivered_death, entry) {
+@@ -2752,7 +2761,7 @@
+ 
+ 	if (*consumed == 0) {
+ 		if (put_user_preempt_disabled(BR_NOOP, (uint32_t __user *)ptr))
+-			return -EFAULT;
++			return binder_user_fault(__LINE__);
+ 		ptr += sizeof(uint32_t);
+ 	}
+ 
+@@ -2763,7 +2772,7 @@
+ 	if (thread->return_error != BR_OK && ptr < end) {
+ 		if (thread->return_error2 != BR_OK) {
+ 			if (put_user_preempt_disabled(thread->return_error2, (uint32_t __user *)ptr))
+-				return -EFAULT;
++				return binder_user_fault(__LINE__);
+ 			ptr += sizeof(uint32_t);
+ 			binder_stat_br(proc, thread, thread->return_error2);
+ 			if (ptr == end)
+@@ -2771,7 +2780,7 @@
+ 			thread->return_error2 = BR_OK;
+ 		}
+ 		if (put_user_preempt_disabled(thread->return_error, (uint32_t __user *)ptr))
+-			return -EFAULT;
++			return binder_user_fault(__LINE__);
+ 		ptr += sizeof(uint32_t);
+ 		binder_stat_br(proc, thread, thread->return_error);
+ 		thread->return_error = BR_OK;
+@@ -2849,7 +2858,7 @@
+ 		case BINDER_WORK_TRANSACTION_COMPLETE: {
+ 			cmd = BR_TRANSACTION_COMPLETE;
+ 			if (put_user_preempt_disabled(cmd, (uint32_t __user *)ptr))
+-				return -EFAULT;
++				return binder_user_fault(__LINE__);
+ 			ptr += sizeof(uint32_t);
+ 
+ 			binder_stat_br(proc, thread, cmd);
+@@ -2891,15 +2900,15 @@
+ 			}
+ 			if (cmd != BR_NOOP) {
+ 				if (put_user_preempt_disabled(cmd, (uint32_t __user *)ptr))
+-					return -EFAULT;
++					return binder_user_fault(__LINE__);
+ 				ptr += sizeof(uint32_t);
+ 				if (put_user_preempt_disabled(node->ptr,
+ 					     (binder_uintptr_t __user *)ptr))
+-					return -EFAULT;
++					return binder_user_fault(__LINE__);
+ 				ptr += sizeof(binder_uintptr_t);
+ 				if (put_user_preempt_disabled(node->cookie,
+ 					     (binder_uintptr_t __user *)ptr))
+-					return -EFAULT;
++					return binder_user_fault(__LINE__);
+ 				ptr += sizeof(binder_uintptr_t);
+ 
+ 				binder_stat_br(proc, thread, cmd);
+@@ -2942,11 +2951,11 @@
+ 			else
+ 				cmd = BR_DEAD_BINDER;
+ 			if (put_user_preempt_disabled(cmd, (uint32_t __user *)ptr))
+-				return -EFAULT;
++				return binder_user_fault(__LINE__);
+ 			ptr += sizeof(uint32_t);
+ 			if (put_user_preempt_disabled(death->cookie,
+ 				     (binder_uintptr_t __user *)ptr))
+-				return -EFAULT;
++				return binder_user_fault(__LINE__);
+ 			ptr += sizeof(binder_uintptr_t);
+ 			binder_stat_br(proc, thread, cmd);
+ 			binder_debug(BINDER_DEBUG_DEATH_NOTIFICATION,
+@@ -3013,10 +3022,10 @@
+ 					    sizeof(void *));
+ 
+ 		if (put_user_preempt_disabled(cmd, (uint32_t __user *)ptr))
+-			return -EFAULT;
++			return binder_user_fault(__LINE__);
+ 		ptr += sizeof(uint32_t);
+ 		if (copy_to_user_preempt_disabled(ptr, &tr, sizeof(tr)))
+-			return -EFAULT;
++			return binder_user_fault(__LINE__);
+ 		ptr += sizeof(tr);
+ 
+ 		trace_binder_transaction_received(t);
+@@ -3058,7 +3067,7 @@
+ 			     "%d:%d BR_SPAWN_LOOPER\n",
+ 			     proc->pid, thread->pid);
+ 		if (put_user_preempt_disabled(BR_SPAWN_LOOPER, (uint32_t __user *)buffer))
+-			return -EFAULT;
++			return binder_user_fault(__LINE__);
+ 		binder_stat_br(proc, thread, BR_SPAWN_LOOPER);
+ 	}
+ 	return 0;
+@@ -3237,7 +3246,7 @@
+ 		goto out;
+ 	}
+ 	if (copy_from_user_preempt_disabled(&bwr, ubuf, sizeof(bwr))) {
+-		ret = -EFAULT;
++		ret = binder_user_fault(__LINE__);
+ 		goto out;
+ 	}
+ 	binder_debug(BINDER_DEBUG_READ_WRITE,
+@@ -3255,7 +3264,7 @@
+ 		if (ret < 0) {
+ 			bwr.read_consumed = 0;
+ 			if (copy_to_user_preempt_disabled(ubuf, &bwr, sizeof(bwr)))
+-				ret = -EFAULT;
++				ret = binder_user_fault(__LINE__);
+ 			goto out;
+ 		}
+ 	}
+@@ -3269,7 +3278,7 @@
+ 			wake_up_interruptible(&proc->wait);
+ 		if (ret < 0) {
+ 			if (copy_to_user_preempt_disabled(ubuf, &bwr, sizeof(bwr)))
+-				ret = -EFAULT;
++				ret = binder_user_fault(__LINE__);
+ 			goto out;
+ 		}
+ 	}
+@@ -3279,7 +3288,7 @@
+ 		     (u64)bwr.write_consumed, (u64)bwr.write_size,
+ 		     (u64)bwr.read_consumed, (u64)bwr.read_size);
+ 	if (copy_to_user_preempt_disabled(ubuf, &bwr, sizeof(bwr))) {
+-		ret = -EFAULT;
++		ret = binder_user_fault(__LINE__);
+ 		goto out;
+ 	}
+ out:

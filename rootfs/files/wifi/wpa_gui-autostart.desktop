@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Wi-Fi
+Name[ko]=Wi-Fi
+Comment=Wi-Fi networks (wpa_supplicant) in the panel
+Exec=env QT_QPA_PLATFORMTHEME=gtk3 wpa_gui -t -i wlan0
+Icon=network-wireless
+X-XFCE-Autostart-Override=true

@@ -1,0 +1,41 @@
+#!/bin/sh
+### BEGIN INIT INFO
+# Provides:          sm-t280-usb
+# Required-Start:    mountkernfs $local_fs
+# Required-Stop:
+# Default-Start:     S
+# Default-Stop:
+# Short-Description: USB RNDIS + ACM gadget, DHCP for the host PC
+### END INIT INFO
+# Legacy android_usb gadget of the 3.10 kernel. RNDIS uses the Windows inbox
+# driver (wceis=1); the tablet is 192.168.7.2 and hands 192.168.7.1 to the PC.
+G=/sys/class/android_usb/android0
+log() { echo "sm-t280-usb: $*" > /dev/kmsg; }
+case "$1" in
+start)
+    # Host keys must exist before sshd starts in runlevel 2.
+    [ -f /etc/ssh/ssh_host_ed25519_key ] || ssh-keygen -A
+    [ -d $G ] || { log "no android_usb gadget"; exit 0; }
+    echo 0 > $G/enable
+    echo 18D1 > $G/idVendor
+    echo 4EE4 > $G/idProduct
+    echo "SM-T280" > $G/iProduct
+    [ -f $G/f_rndis/wceis ] && echo 1 > $G/f_rndis/wceis
+    [ -f $G/f_acm/instances ] && echo 1 > $G/f_acm/instances
+    [ -f $G/f_rndis/ethaddr ] && echo 02:1e:28:00:00:01 > $G/f_rndis/ethaddr
+    echo rndis,acm > $G/functions
+    echo 1 > $G/enable
+    for i in $(seq 1 30); do
+        IF=$(ls /sys/class/net | grep -E '^(rndis|usb)[0-9]' | head -1)
+        [ -n "$IF" ] && break; sleep 0.2
+    done
+    [ -n "$IF" ] || { log "no rndis interface"; exit 0; }
+    ip addr add 192.168.7.2/24 dev $IF 2>/dev/null; ip link set $IF up
+    # Lease file on tmpfs: stale leases from older host MACs must not survive.
+    dnsmasq --interface=$IF --bind-interfaces --port=0 \
+        --dhcp-range=192.168.7.1,192.168.7.1,255.255.255.0,12h \
+        --dhcp-option=3 --dhcp-option=6 --pid-file=/run/dnsmasq-usb.pid \
+        --dhcp-leasefile=/run/dnsmasq-usb.leases
+    log "up: $IF 192.168.7.2"
+    ;;
+esac

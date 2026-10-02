@@ -1,0 +1,129 @@
+--- a/arch/Kconfig
++++ b/arch/Kconfig
+@@ -437,4 +437,37 @@
+ config COMPAT_OLD_SIGACTION
+ 	bool
+ 
++config HAVE_ARCH_MMAP_RND_BITS
++	bool
++	help
++	  An arch should select this symbol if it supports setting a variable
++	  number of bits for use in establishing the base address for mmap
++	  allocations, has MMU enabled and provides values for both:
++	  - ARCH_MMAP_RND_BITS_MIN
++	  - ARCH_MMAP_RND_BITS_MAX
++
++config ARCH_MMAP_RND_BITS_MIN
++	int
++
++config ARCH_MMAP_RND_BITS_MAX
++	int
++
++config ARCH_MMAP_RND_BITS_DEFAULT
++	int
++
++config ARCH_MMAP_RND_BITS
++	int "Number of bits to use for ASLR of mmap base address" if EXPERT
++	range ARCH_MMAP_RND_BITS_MIN ARCH_MMAP_RND_BITS_MAX
++	default ARCH_MMAP_RND_BITS_DEFAULT if ARCH_MMAP_RND_BITS_DEFAULT
++	default ARCH_MMAP_RND_BITS_MIN
++	depends on HAVE_ARCH_MMAP_RND_BITS
++	help
++	  This value can be used to select the number of bits to use to
++	  determine the random offset to the base address of vma regions
++	  resulting from mmap allocations. This value will be bounded
++	  by the architecture's minimum and maximum supported values.
++
++	  This value can be changed after boot using the
++	  /proc/sys/vm/mmap_rnd_bits tunable
++
+ source "kernel/gcov/Kconfig"
+--- a/arch/arm/Kconfig
++++ b/arch/arm/Kconfig
+@@ -22,6 +22,7 @@
+ 	select HARDIRQS_SW_RESEND
+ 	select HAVE_ARCH_JUMP_LABEL if !XIP_KERNEL
+ 	select HAVE_ARCH_KGDB
++	select HAVE_ARCH_MMAP_RND_BITS if MMU
+ 	select HAVE_ARCH_SECCOMP_FILTER
+ 	select HAVE_ARCH_TRACEHOOK
+ 	select HAVE_BPF_JIT
+@@ -190,6 +191,14 @@
+ config ZONE_DMA
+ 	bool
+ 
++config ARCH_MMAP_RND_BITS_MIN
++	default 8
++
++config ARCH_MMAP_RND_BITS_MAX
++	default 14 if PAGE_OFFSET=0x40000000
++	default 15 if PAGE_OFFSET=0x80000000
++	default 16
++
+ config NEED_DMA_MAP_STATE
+        def_bool y
+ 
+--- a/include/linux/mm.h
++++ b/include/linux/mm.h
+@@ -45,6 +45,12 @@
+ #include <asm/processor.h>
+ 
+ extern unsigned long sysctl_user_reserve_kbytes;
++
++#ifdef CONFIG_HAVE_ARCH_MMAP_RND_BITS
++extern const int mmap_rnd_bits_min;
++extern const int mmap_rnd_bits_max;
++extern int mmap_rnd_bits __read_mostly;
++#endif
+ extern unsigned long sysctl_admin_reserve_kbytes;
+ 
+ #define nth_page(page,n) pfn_to_page(page_to_pfn((page)) + (n))
+--- a/mm/mmap.c
++++ b/mm/mmap.c
+@@ -87,6 +87,11 @@
+ int sysctl_overcommit_memory __read_mostly = OVERCOMMIT_GUESS;  /* heuristic overcommit */
+ int sysctl_overcommit_ratio __read_mostly = 50;	/* default is 50% */
+ int sysctl_max_map_count __read_mostly = DEFAULT_MAX_MAP_COUNT;
++#ifdef CONFIG_HAVE_ARCH_MMAP_RND_BITS
++const int mmap_rnd_bits_min = CONFIG_ARCH_MMAP_RND_BITS_MIN;
++const int mmap_rnd_bits_max = CONFIG_ARCH_MMAP_RND_BITS_MAX;
++int mmap_rnd_bits __read_mostly = CONFIG_ARCH_MMAP_RND_BITS;
++#endif
+ unsigned long sysctl_user_reserve_kbytes __read_mostly = 1UL << 17; /* 128MB */
+ unsigned long sysctl_admin_reserve_kbytes __read_mostly = 1UL << 13; /* 8MB */
+ /*
+--- a/kernel/sysctl.c
++++ b/kernel/sysctl.c
+@@ -1189,6 +1189,17 @@
+ 		.mode           = 0444 /* read-only */,
+ 		.proc_handler   = pdflush_proc_obsolete,
+ 	},
++#ifdef CONFIG_HAVE_ARCH_MMAP_RND_BITS
++	{
++		.procname	= "mmap_rnd_bits",
++		.data		= &mmap_rnd_bits,
++		.maxlen		= sizeof(mmap_rnd_bits),
++		.mode		= 0600,
++		.proc_handler	= proc_dointvec_minmax,
++		.extra1		= (void *)&mmap_rnd_bits_min,
++		.extra2		= (void *)&mmap_rnd_bits_max,
++	},
++#endif
+ 	{
+ 		.procname	= "swappiness",
+ 		.data		= &vm_swappiness,
+--- a/arch/arm/mm/mmap.c
++++ b/arch/arm/mm/mmap.c
+@@ -173,10 +173,10 @@
+ {
+ 	unsigned long random_factor = 0UL;
+ 
+-	/* 8 bits of randomness in 20 address space bits */
++	/* mmap_rnd_bits of randomness in the mmap base */
+ 	if ((current->flags & PF_RANDOMIZE) &&
+ 	    !(current->personality & ADDR_NO_RANDOMIZE))
+-		random_factor = (get_random_int() % (1 << 8)) << PAGE_SHIFT;
++		random_factor = (get_random_int() & ((1UL << mmap_rnd_bits) - 1)) << PAGE_SHIFT;
+ 
+ 	if (mmap_is_legacy()) {
+ 		mm->mmap_base = TASK_UNMAPPED_BASE + random_factor;

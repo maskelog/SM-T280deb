@@ -1,0 +1,40 @@
+#!/bin/sh
+# Set the SM-T280 screen orientation and restart the X session.
+#   sm-t280-rotate portrait | landscape-home-right | landscape-home-left
+# The fbdev driver can only rotate at X server start ("Rotate" option), so the
+# Xorg config and the touchscreen calibration are rewritten and the display
+# service is restarted. The choice is kept in /etc/sm-t280-rotation.
+# The panel scans out upside down, hence "UD" for normal portrait.
+set -eu
+case "${1:-}" in
+portrait)             ROT=UD;  MATRIX="1 0 0 0 1 0 0 0 1" ;;
+landscape-home-right) ROT=CCW; MATRIX="0 1 0 -1 0 1 0 0 1" ;;
+landscape-home-left)  ROT=CW;  MATRIX="0 -1 1 1 0 0 0 0 1" ;;
+*) echo "usage: $0 portrait|landscape-home-right|landscape-home-left" >&2; exit 2 ;;
+esac
+[ "$(id -u)" = 0 ] || exec sudo -n "$0" "$1"
+cat > /etc/X11/xorg.conf.d/10-sm-t280-fbdev.conf <<CONF
+# SM-T280 sprdfb framebuffer (written by sm-t280-rotate: $1)
+Section "Device"
+    Identifier "sprdfb"
+    Driver     "fbdev"
+    Option     "fbdev" "/dev/fb0"
+    Option     "ShadowFB" "on"
+    Option     "Rotate" "$ROT"
+EndSection
+CONF
+cat > /etc/X11/xorg.conf.d/20-sm-t280-touch.conf <<CONF
+# SM-T280 sec_touchscreen calibration (written by sm-t280-rotate: $1)
+Section "InputClass"
+    Identifier     "sm-t280 touchscreen"
+    MatchProduct   "sec_touchscreen"
+    MatchDriver    "libinput"
+    Option         "CalibrationMatrix" "$MATRIX"
+EndSection
+CONF
+echo "$1" > /etc/sm-t280-rotation
+sync
+# Restart detached: this script may run inside the session being restarted.
+setsid sh -c '/etc/init.d/sm-t280-display stop; sleep 2; pkill -x Xorg || true; sleep 2; /etc/init.d/sm-t280-display start' \
+    > /dev/null 2>&1 < /dev/null &
+echo "orientation: $1 (X session restarting)"

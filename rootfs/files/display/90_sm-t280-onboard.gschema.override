@@ -1,0 +1,17 @@
+# SM-T280: on-screen keyboard docked at the bottom, shown when a text field
+# gets focus (needs at-spi2-core + gir1.2-atspi-2.0).
+[org.onboard.window]
+docking-enabled=true
+docking-edge='bottom'
+docking-shrink-workarea=true
+force-to-top=true
+
+[org.onboard.window.portrait]
+dock-height=400
+
+[org.onboard.window.landscape]
+dock-height=300
+
+[org.onboard.auto-show]
+enabled=true
+hide-on-key-press=false

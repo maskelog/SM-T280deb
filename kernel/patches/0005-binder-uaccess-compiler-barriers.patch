@@ -1,0 +1,29 @@
+--- a/drivers/staging/android/binder.c
++++ b/drivers/staging/android/binder.c
+@@ -530,11 +530,16 @@
+ 	return ret;
+ }
+ 
++/* ARM user-access asm lacks a memory clobber in this vendor tree.
++ * Keep preempt_count updates on their intended side of the access so
++ * demand paging and fork COW faults can sleep. */
+ #define get_user_preempt_disabled(x, ptr)	\
+ ({						\
+ 	int __ret;				\
+ 	preempt_enable_no_resched();		\
++	barrier();				\
+ 	__ret = get_user(x, ptr);		\
++	barrier();				\
+ 	preempt_disable();			\
+ 	__ret;					\
+ })
+@@ -543,7 +548,9 @@
+ ({						\
+ 	int __ret;				\
+ 	preempt_enable_no_resched();		\
++	barrier();				\
+ 	__ret = put_user(x, ptr);		\
++	barrier();				\
+ 	preempt_disable();			\
+ 	__ret;					\
+ })

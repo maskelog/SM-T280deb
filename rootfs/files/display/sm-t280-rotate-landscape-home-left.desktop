@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Rotate: Landscape (home button left)
+Name[ko]=화면 회전: 가로 (홈 버튼 왼쪽)
+Comment=Restart the desktop in this orientation
+Comment[ko]=이 방향으로 화면을 바꿉니다 (데스크톱이 다시 시작됩니다)
+Exec=/usr/local/sbin/sm-t280-rotate landscape-home-left
+Icon=view-landscape
+Terminal=false
+Categories=Settings;DesktopSettings;

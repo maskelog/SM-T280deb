@@ -1,0 +1,39 @@
+#!/bin/sh
+### BEGIN INIT INFO
+# Provides:          sm-t280-wifi
+# Required-Start:    $local_fs sm-t280-usb
+# Required-Stop:
+# Default-Start:     2 3 4 5
+# Default-Stop:      0 1 6
+# Short-Description: SC2331 (Marlin) Wi-Fi: firmware, driver, WPA, DHCP
+### END INIT INFO
+# The stock 'download' daemon (Android bionic binary, extracted from your own
+# system image into /system) powers the Marlin chip and loads its firmware;
+# the sprdwl module then binds. Calibration is read from the prodnv partition,
+# mounted read-only so the device's own values are never modified.
+log() { echo "sm-t280-wifi: $*" > /dev/kmsg; }
+case "$1" in
+start)
+    [ -x /system/bin/download ] || { log "no /system/bin/download (see device/extract-android-blobs.sh)"; exit 0; }
+    mkdir -p /productinfo /data/misc/wifi
+    mountpoint -q /productinfo || mount -o ro PARTLABEL=prodnv /productinfo
+    echo sta_mode > /data/misc/wifi/fwpath
+    # 'download' stays resident afterwards; the firmware is loaded well before 60 s.
+    timeout 60 /system/bin/download > /dev/null 2>&1
+    modprobe sprdwl || { log "sprdwl failed"; exit 0; }
+    for i in $(seq 1 30); do [ -d /sys/class/net/wlan0 ] && break; sleep 0.2; done
+    wpa_supplicant -B -i wlan0 -D nl80211 -c /etc/wpa_supplicant/wpa_supplicant-wlan0.conf \
+        -P /run/wpa_supplicant-wlan0.pid
+    # DHCP runs from wpa_cli on every association (also for networks picked in wpa_gui)
+    wpa_cli -i wlan0 -a /etc/wpa_supplicant/action-wlan0.sh -B -P /run/wpa_cli-wlan0.pid
+    # Association may already have completed before wpa_cli attached.
+    sleep 1
+    wpa_cli -i wlan0 status 2>/dev/null | grep -q '^wpa_state=COMPLETED' &&         /etc/wpa_supplicant/action-wlan0.sh wlan0 CONNECTED
+    log "started"
+    ;;
+stop)
+    [ -f /run/wpa_cli-wlan0.pid ] && kill "$(cat /run/wpa_cli-wlan0.pid)" 2>/dev/null
+    [ -f /run/udhcpc-wlan0.pid ] && kill "$(cat /run/udhcpc-wlan0.pid)" 2>/dev/null
+    [ -f /run/wpa_supplicant-wlan0.pid ] && kill "$(cat /run/wpa_supplicant-wlan0.pid)" 2>/dev/null
+    ;;
+esac

@@ -1,0 +1,157 @@
+--- a/drivers/char/random.c
++++ b/drivers/char/random.c
+@@ -243,6 +243,7 @@
+ #include <linux/fcntl.h>
+ #include <linux/slab.h>
+ #include <linux/random.h>
++#include <linux/syscalls.h>
+ #include <linux/poll.h>
+ #include <linux/init.h>
+ #include <linux/fs.h>
+@@ -404,6 +405,7 @@
+  */
+ static DECLARE_WAIT_QUEUE_HEAD(random_read_wait);
+ static DECLARE_WAIT_QUEUE_HEAD(random_write_wait);
++static DECLARE_WAIT_QUEUE_HEAD(urandom_init_wait);
+ static struct fasync_struct *fasync;
+ 
+ static bool debug;
+@@ -613,8 +615,11 @@
+ 
+ 	if (!r->initialized && nbits > 0) {
+ 		r->entropy_total += nbits;
+-		if (r->entropy_total > 128)
++		if (r->entropy_total > 128) {
+ 			r->initialized = 1;
++			if (r == &nonblocking_pool)
++				wake_up_interruptible(&urandom_init_wait);
++		}
+ 	}
+ 
+ 	trace_credit_entropy_bits(r->name, nbits, entropy_count,
+@@ -1022,13 +1027,14 @@
+ {
+ 	ssize_t ret = 0, i;
+ 	__u8 tmp[EXTRACT_SIZE];
++	int large_request = (nbytes > 256);
+ 
+ 	trace_extract_entropy_user(r->name, nbytes, r->entropy_count, _RET_IP_);
+ 	xfer_secondary_pool(r, nbytes);
+ 	nbytes = account(r, nbytes, 0, 0);
+ 
+ 	while (nbytes) {
+-		if (need_resched()) {
++		if (large_request && need_resched()) {
+ 			if (signal_pending(current)) {
+ 				if (ret == 0)
+ 					ret = -ERESTARTSYS;
+@@ -1162,7 +1168,7 @@
+ #endif
+ 
+ static ssize_t
+-random_read(struct file *file, char __user *buf, size_t nbytes, loff_t *ppos)
++_random_read(int nonblock, char __user *buf, size_t nbytes)
+ {
+ 	ssize_t n, retval = 0, count = 0;
+ 
+@@ -1187,7 +1193,7 @@
+ 			  n*8, (nbytes-n)*8);
+ 
+ 		if (n == 0) {
+-			if (file->f_flags & O_NONBLOCK) {
++			if (nonblock) {
+ 				retval = -EAGAIN;
+ 				break;
+ 			}
+@@ -1219,9 +1225,36 @@
+ }
+ 
+ static ssize_t
++random_read(struct file *file, char __user *buf, size_t nbytes, loff_t *ppos)
++{
++	return _random_read(file->f_flags & O_NONBLOCK, buf, nbytes);
++}
++
++static ssize_t
+ urandom_read(struct file *file, char __user *buf, size_t nbytes, loff_t *ppos)
+ {
+ 	return extract_entropy_user(&nonblocking_pool, buf, nbytes);
++}
++
++/* Linux getrandom ABI: do not expose uninitialized urandom output. */
++SYSCALL_DEFINE3(getrandom, char __user *, buf, size_t, count,
++		unsigned int, flags)
++{
++	if (flags & ~(GRND_NONBLOCK | GRND_RANDOM))
++		return -EINVAL;
++	if (count > INT_MAX)
++		count = INT_MAX;
++	if (flags & GRND_RANDOM)
++		return _random_read(flags & GRND_NONBLOCK, buf, count);
++	if (unlikely(nonblocking_pool.initialized == 0)) {
++		if (flags & GRND_NONBLOCK)
++			return -EAGAIN;
++		wait_event_interruptible(urandom_init_wait,
++					 nonblocking_pool.initialized);
++		if (signal_pending(current))
++			return -ERESTARTSYS;
++	}
++	return urandom_read(NULL, buf, count, NULL);
+ }
+ 
+ static unsigned int
+--- a/include/uapi/linux/random.h
++++ b/include/uapi/linux/random.h
+@@ -47,4 +47,8 @@
+ /* Exported functions */
+ 
+ 
++/* Flags for getrandom(2). */
++#define GRND_NONBLOCK 0x0001
++#define GRND_RANDOM 0x0002
++
+ #endif /* _UAPI_LINUX_RANDOM_H */
+--- a/include/linux/syscalls.h
++++ b/include/linux/syscalls.h
+@@ -848,4 +848,6 @@
+ asmlinkage long sys_finit_module(int fd, const char __user *uargs, int flags);
+ asmlinkage long sys_seccomp(unsigned int op, unsigned int flags,
+ 			    const char __user *uargs);
+-#endif
++asmlinkage long sys_getrandom(char __user *buf, size_t count, unsigned int flags);
++
++#endif
+--- a/arch/arm/include/uapi/asm/unistd.h
++++ b/arch/arm/include/uapi/asm/unistd.h
+@@ -412,6 +412,7 @@
+ #define __NR_renameat2			(__NR_SYSCALL_BASE+382)
+ */
+ #define __NR_seccomp			(__NR_SYSCALL_BASE+383)
++#define __NR_getrandom			(__NR_SYSCALL_BASE+384)
+ 
+ /*
+  * This may need to be greater than __NR_last_syscall+1 in order to
+--- a/arch/arm/include/asm/unistd.h
++++ b/arch/arm/include/asm/unistd.h
+@@ -15,7 +15,7 @@
+ 
+ #include <uapi/asm/unistd.h>
+ 
+-#define __NR_syscalls  (384)
++#define __NR_syscalls  (388)
+ #define __ARM_NR_cmpxchg		(__ARM_NR_BASE+0x00fff0)
+ 
+ #define __ARCH_WANT_STAT64
+--- a/arch/arm/kernel/calls.S
++++ b/arch/arm/kernel/calls.S
+@@ -393,6 +393,10 @@
+ 		CALL(sys_ni_syscall)		/* reserved sys_sched_getattr */
+ 		CALL(sys_ni_syscall)		/* reserved sys_renameat2     */
+ 		CALL(sys_seccomp)
++		CALL(sys_getrandom)
++/* 385 */	CALL(sys_ni_syscall)		/* reserved sys_memfd_create */
++		CALL(sys_ni_syscall)		/* reserved sys_bpf */
++		CALL(sys_ni_syscall)		/* reserved sys_execveat */
+ 
+ #ifndef syscalls_counted
+ .equ syscalls_padding, ((NR_syscalls + 3) & ~3) - NR_syscalls

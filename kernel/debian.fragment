@@ -1,0 +1,10 @@
+# Debian 13 (armhf, sysvinit) on the vendor 3.10 kernel.
+# udev needs devtmpfs and name_to_handle_at().
+CONFIG_DEVTMPFS=y
+CONFIG_DEVTMPFS_MOUNT=y
+CONFIG_FHANDLE=y
+# Android-only: restricts AF_INET sockets to gid 3003, which breaks normal users.
+# CONFIG_ANDROID_PARANOID_NETWORK is not set
+# Use the bootloader cmdline as is (no androidboot.* arguments).
+CONFIG_CMDLINE_FROM_BOOTLOADER=y
+# CONFIG_CMDLINE_EXTEND is not set

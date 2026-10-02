@@ -1,0 +1,249 @@
+--- a/drivers/usb/gadget/f_fs.c
++++ b/drivers/usb/gadget/f_fs.c
+@@ -26,6 +26,9 @@
+ 
+ #include <linux/usb/composite.h>
+ #include <linux/usb/functionfs.h>
++
++#include <linux/aio.h>
++#include <linux/mmu_context.h>
+ 
+ 
+ #define FUNCTIONFS_MAGIC	0xa647361 /* Chosen by a honest dice roll ;) */
+@@ -981,12 +984,236 @@
+ 	return ret;
+ }
+ 
++/* Asynchronous I/O (io_submit) on endpoint files ***************************/
++
++#define FFS_AIO_MAX_LEN		(1024 * 1024)
++
++struct ffs_aio_data {
++	bool			read;
++	struct kiocb		*kiocb;
++	struct ffs_data		*ffs;
++	struct iovec		*iovec;		/* read: private copy */
++	unsigned long		nr_segs;
++	size_t			len;		/* bytes requested by user */
++	char			*buf;
++	struct mm_struct	*mm;		/* read: mm_count reference */
++	struct work_struct	work;
++	struct usb_ep		*ep;
++	struct usb_request	*req;
++};
++
++static void ffs_aio_free(struct ffs_aio_data *io)
++{
++	if (io->mm)
++		mmdrop(io->mm);
++	kfree(io->iovec);
++	kfree(io->buf);
++	kfree(io);
++}
++
++static void ffs_aio_complete_work(struct work_struct *work)
++{
++	struct ffs_aio_data *io = container_of(work, struct ffs_aio_data, work);
++	long ret = io->req->status ? io->req->status : io->req->actual;
++
++	if (io->read && ret > 0) {
++		size_t left = min_t(size_t, ret, io->len), pos = 0;
++		unsigned long i;
++
++		use_mm(io->mm);
++		for (i = 0; i < io->nr_segs && left; i++) {
++			size_t n = min_t(size_t, io->iovec[i].iov_len, left);
++
++			if (copy_to_user(io->iovec[i].iov_base, io->buf + pos, n)) {
++				ret = -EFAULT;
++				break;
++			}
++			pos += n;
++			left -= n;
++		}
++		unuse_mm(io->mm);
++		if (ret > 0)
++			ret = pos;
++	}
++
++	/* A concurrent cancel looks the request up under eps_lock. */
++	spin_lock_irq(&io->ffs->eps_lock);
++	io->kiocb->private = NULL;
++	spin_unlock_irq(&io->ffs->eps_lock);
++
++	aio_complete(io->kiocb, ret, ret);
++	usb_ep_free_request(io->ep, io->req);
++	ffs_aio_free(io);
++}
++
++static void ffs_aio_req_complete(struct usb_ep *_ep, struct usb_request *req)
++{
++	struct ffs_aio_data *io = req->context;
++
++	INIT_WORK(&io->work, ffs_aio_complete_work);
++	schedule_work(&io->work);
++}
++
++static int ffs_aio_cancel(struct kiocb *kiocb, struct io_event *event)
++{
++	struct ffs_epfile *epfile = kiocb->ki_filp->private_data;
++	struct ffs_aio_data *io;
++	int value = -EINVAL;
++
++	ENTER();
++
++	spin_lock_irq(&epfile->ffs->eps_lock);
++	io = kiocb->private;
++	if (io && io->ep && io->req)
++		value = usb_ep_dequeue(io->ep, io->req);
++	spin_unlock_irq(&epfile->ffs->eps_lock);
++
++	return value;
++}
++
++static ssize_t ffs_epfile_aio_submit(struct kiocb *kiocb,
++				     const struct iovec *iovec,
++				     unsigned long nr_segs, bool read)
++{
++	struct file *file = kiocb->ki_filp;
++	struct ffs_epfile *epfile = file->private_data;
++	size_t len = iov_length(iovec, nr_segs), buf_len;
++	struct ffs_aio_data *io;
++	struct usb_request *req;
++	struct ffs_ep *ep;
++	ssize_t ret;
++	unsigned long i;
++
++	ENTER();
++
++	if (WARN_ON(epfile->ffs->state != FFS_ACTIVE))
++		return -ENODEV;
++	if (!len || len > FFS_AIO_MAX_LEN)
++		return -EINVAL;
++
++	/* Wait for the endpoint to be enabled, like the synchronous path. */
++	ep = epfile->ep;
++	if (!ep) {
++		if (file->f_flags & O_NONBLOCK)
++			return -EAGAIN;
++		if (wait_event_interruptible(epfile->wait, (ep = epfile->ep)))
++			return -EINTR;
++	}
++	/* Halting an endpoint through AIO is not supported. */
++	if (!read == !epfile->in)
++		return -EINVAL;
++
++	buf_len = len;
++	if (read) {
++		/* maxpacket is a bit-field; roundup() needs a plain lvalue type */
++		size_t maxpacket = ep->ep->maxpacket;
++
++		if (maxpacket)
++			buf_len = roundup(len, maxpacket);
++	}
++
++	io = kzalloc(sizeof(*io), GFP_KERNEL);
++	if (unlikely(!io))
++		return -ENOMEM;
++	io->read = read;
++	io->kiocb = kiocb;
++	io->ffs = epfile->ffs;
++	io->nr_segs = nr_segs;
++	io->len = len;
++	io->buf = kmalloc(buf_len, GFP_KERNEL);
++	if (unlikely(!io->buf)) {
++		ret = -ENOMEM;
++		goto err_free;
++	}
++
++	if (read) {
++		io->iovec = kmemdup(iovec, nr_segs * sizeof(*iovec), GFP_KERNEL);
++		if (unlikely(!io->iovec)) {
++			ret = -ENOMEM;
++			goto err_free;
++		}
++		io->mm = current->mm;
++		atomic_inc(&io->mm->mm_count);
++	} else {
++		size_t pos = 0;
++
++		for (i = 0; i < nr_segs; i++) {
++			if (unlikely(copy_from_user(io->buf + pos,
++						    iovec[i].iov_base,
++						    iovec[i].iov_len))) {
++				ret = -EFAULT;
++				goto err_free;
++			}
++			pos += iovec[i].iov_len;
++		}
++	}
++
++	req = usb_ep_alloc_request(ep->ep, GFP_KERNEL);
++	if (unlikely(!req)) {
++		ret = -ENOMEM;
++		goto err_free;
++	}
++	req->buf = io->buf;
++	req->length = buf_len;
++	req->context = io;
++	req->complete = ffs_aio_req_complete;
++	io->ep = ep->ep;
++	io->req = req;
++
++	/*
++	 * readv()/writev() reach here with a synchronous kiocb (no ki_ctx),
++	 * which kiocb_set_cancel_fn() would dereference. Register outside
++	 * eps_lock so ctx_lock is never nested inside it; a cancel that runs
++	 * before kiocb->private is set below finds NULL and is a no-op.
++	 */
++	if (!is_sync_kiocb(kiocb))
++		kiocb_set_cancel_fn(kiocb, ffs_aio_cancel);
++
++	spin_lock_irq(&epfile->ffs->eps_lock);
++	if (unlikely(epfile->ep != ep)) {
++		spin_unlock_irq(&epfile->ffs->eps_lock);
++		ret = -ESHUTDOWN;
++		goto err_free_req;
++	}
++	kiocb->private = io;
++	ret = usb_ep_queue(ep->ep, req, GFP_ATOMIC);
++	if (unlikely(ret))
++		kiocb->private = NULL;
++	spin_unlock_irq(&epfile->ffs->eps_lock);
++	if (unlikely(ret))
++		goto err_free_req;
++
++	return -EIOCBQUEUED;
++
++err_free_req:
++	usb_ep_free_request(ep->ep, req);
++err_free:
++	ffs_aio_free(io);
++	return ret;
++}
++
++static ssize_t ffs_epfile_aio_write(struct kiocb *kiocb,
++				    const struct iovec *iovec,
++				    unsigned long nr_segs, loff_t loff)
++{
++	return ffs_epfile_aio_submit(kiocb, iovec, nr_segs, false);
++}
++
++static ssize_t ffs_epfile_aio_read(struct kiocb *kiocb,
++				   const struct iovec *iovec,
++				   unsigned long nr_segs, loff_t loff)
++{
++	return ffs_epfile_aio_submit(kiocb, iovec, nr_segs, true);
++}
++
+ static const struct file_operations ffs_epfile_operations = {
+ 	.llseek =	no_llseek,
+ 
+ 	.open =		ffs_epfile_open,
+ 	.write =	ffs_epfile_write,
+ 	.read =		ffs_epfile_read,
++	.aio_write =	ffs_epfile_aio_write,
++	.aio_read =	ffs_epfile_aio_read,
+ 	.release =	ffs_epfile_release,
+ 	.unlocked_ioctl =	ffs_epfile_ioctl,
+ };

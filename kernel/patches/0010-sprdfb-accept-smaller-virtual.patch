@@ -1,0 +1,18 @@
+--- a/drivers/video/sprdfb/sprdfb_main.c
++++ b/drivers/video/sprdfb/sprdfb_main.c
+@@ -528,6 +528,15 @@
+ 
+ static int sprdfb_check_var(struct fb_var_screeninfo *var, struct fb_info *fb)
+ {
++	/*
++	 * Plain fbdev clients (Xorg fbdev) request the current mode with
++	 * yres_virtual == yres. Keep the driver's own virtual height.
++	 */
++	if (var->yres_virtual >= var->yres &&
++	    var->yres_virtual < fb->var.yres_virtual &&
++	    var->yoffset + var->yres <= var->yres_virtual)
++		var->yres_virtual = fb->var.yres_virtual;
++
+ 	if ((var->xres != fb->var.xres) ||
+ 		(var->yres != fb->var.yres) ||
+ 		(var->xres_virtual != fb->var.xres_virtual) ||
