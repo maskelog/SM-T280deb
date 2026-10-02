@@ -16,6 +16,11 @@
   returns EAGAIN; scanning works through wpa_supplicant (nl80211).
 - **USB:** legacy `android_usb` gadget (`/sys/class/android_usb/android0`), functions include
   rndis, acm, adb (FunctionFS), mtp.
+  On every re-enumeration the gadget re-creates `rndis0` (addresses lost) and the PC-side
+  RNDIS MAC changes, so the IP is re-applied from udev and DHCP hands out a small pool.
+- **Load average ~3 at idle** is three vendor kernel threads (`sprd_hotplug`, `wlan_trans`,
+  `wlan_core`) sleeping in D state, not CPU use.
+- When X blanks the panel (DPMS), `FBIOPAN_DISPLAY` fails until it is unblanked.
 - **Partitions (by name):** KERNEL 16 MiB, RECOVERY 16 MiB, SYSTEM 2 GiB, userdata ~12.3 GiB
   (16 GB model), efs, prodnv. Use names, not numbers.
 - **Kernel config gaps vs. modern userspace:** no cgroup v2, no eBPF, no ambient caps or

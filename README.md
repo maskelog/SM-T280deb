@@ -14,7 +14,7 @@ affiliated with Samsung or Debian. **Use at your own risk.**
 | Display (Xorg fbdev + XFCE, rotated 180°) | works, software rendering only |
 | Touchscreen | works |
 | Wi-Fi (SC2331) | works; panel applet (wpa_gui) to scan and join networks; needs the firmware loader from your own Android system |
-| USB networking (RNDIS) + serial console (ACM) | works, can drop after the PC re-enumerates USB |
+| USB networking (RNDIS) + serial console (ACM) | works, survives cable replug / PC re-enumeration (tablet 192.168.7.2, PC gets 192.168.7.10-99) |
 | On-screen keyboard (onboard) | works: docked at the bottom, shown when a text field is focused |
 | Screen rotation | portrait / landscape via `sm-t280-rotate` or the XFCE menu (restarts the session) |
 | Audio, camera, Bluetooth, GPU acceleration, suspend | not done |

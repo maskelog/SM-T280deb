@@ -52,9 +52,12 @@ void main_c(int argc, char **argv)
         ts[0]=ms/1000; ts[1]=(ms%1000)*1000000;
         sc(54,fd,FBIOBLANK,0);
         for(;;) {
+            long idle[2]={1,0};
             v.xoffset=0; v.yoffset=0;
-            sc(54,fd,FBIOPAN_DISPLAY,(long)&v);
-            sc(162,(long)ts,0,0);   /* nanosleep */
+            /* Pan fails while the panel is blanked (X DPMS); back off for a
+             * second instead of flooding the kernel log 30 times a second. */
+            if(sc(54,fd,FBIOPAN_DISPLAY,(long)&v)<0) sc(162,(long)idle,0,0);
+            else sc(162,(long)ts,0,0);   /* nanosleep */
         }
     }
     if(argc>=3 && same(argv[1],"pan")) {

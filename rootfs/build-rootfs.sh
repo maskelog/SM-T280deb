@@ -79,6 +79,8 @@ EOF
 
 # USB gadget + Wi-Fi services
 install -m 755 "$F/usb/sm-t280-usb" "$ROOT/etc/init.d/sm-t280-usb"
+put -m 755 "$F/usb/sm-t280-usbnet" "$ROOT/usr/local/sbin/sm-t280-usbnet"
+install -m 644 "$F/usb/90-sm-t280-usbnet.rules" "$ROOT/etc/udev/rules.d/90-sm-t280-usbnet.rules"
 install -m 755 "$F/wifi/sm-t280-wifi" "$ROOT/etc/init.d/sm-t280-wifi"
 put -m 755 "$F/wifi/udhcpc.script" "$ROOT/etc/udhcpc/default.script"
 install -m 600 "$F/wifi/wpa_supplicant-wlan0.conf" "$ROOT/etc/wpa_supplicant/wpa_supplicant-wlan0.conf"

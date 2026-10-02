@@ -22,7 +22,6 @@ start)
     echo "SM-T280" > $G/iProduct
     [ -f $G/f_rndis/wceis ] && echo 1 > $G/f_rndis/wceis
     [ -f $G/f_acm/instances ] && echo 1 > $G/f_acm/instances
-    [ -f $G/f_rndis/ethaddr ] && echo 02:1e:28:00:00:01 > $G/f_rndis/ethaddr
     echo rndis,acm > $G/functions
     echo 1 > $G/enable
     for i in $(seq 1 30); do
@@ -30,12 +29,11 @@ start)
         [ -n "$IF" ] && break; sleep 0.2
     done
     [ -n "$IF" ] || { log "no rndis interface"; exit 0; }
-    ip addr add 192.168.7.2/24 dev $IF 2>/dev/null; ip link set $IF up
-    # Lease file on tmpfs: stale leases from older host MACs must not survive.
-    dnsmasq --interface=$IF --bind-interfaces --port=0 \
-        --dhcp-range=192.168.7.1,192.168.7.1,255.255.255.0,12h \
-        --dhcp-option=3 --dhcp-option=6 --pid-file=/run/dnsmasq-usb.pid \
-        --dhcp-leasefile=/run/dnsmasq-usb.leases
+    /usr/local/sbin/sm-t280-usbnet "$IF"
+    # DHCP for the PC. The PC-side RNDIS MAC changes on every enumeration, so
+    # hand out a small pool (the tablet itself is always 192.168.7.2).
+    # --bind-dynamic keeps serving after the gadget re-creates rndis0.
+    dnsmasq --interface=rndis0 --bind-dynamic --port=0 --dhcp-authoritative         --dhcp-range=192.168.7.10,192.168.7.99,255.255.255.0,1h         --dhcp-option=3 --dhcp-option=6 --pid-file=/run/dnsmasq-usb.pid         --dhcp-leasefile=/run/dnsmasq-usb.leases
     log "up: $IF 192.168.7.2"
     ;;
 esac

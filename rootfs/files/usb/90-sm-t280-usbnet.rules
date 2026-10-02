@@ -1,0 +1,2 @@
+# Re-apply the USB network setup whenever the RNDIS gadget interface appears.
+ACTION=="add", SUBSYSTEM=="net", KERNEL=="rndis[0-9]*", RUN+="/usr/local/sbin/sm-t280-usbnet %k"

@@ -1,0 +1,11 @@
+#!/bin/sh
+# Configure the USB RNDIS interface (192.168.7.2). Run by udev each time the
+# gadget re-creates the interface (cable replug, PC re-enumeration) and by
+# sm-t280-usb at boot. Only short commands here: udev kills anything left
+# running when the event ends, so the DHCP server is started once at boot
+# (sm-t280-usb, dnsmasq --bind-dynamic follows the re-created interface).
+IF=${1:-rndis0}
+[ -d /sys/class/net/"$IF" ] || exit 0
+ip addr replace 192.168.7.2/24 dev "$IF"
+ip link set "$IF" up
+echo "sm-t280-usbnet: $IF 192.168.7.2" > /dev/kmsg
