@@ -16,6 +16,7 @@ verifies both; `build.sh` applies the patches and `debian.fragment`.
 | 0011 | Mali-400: the vendor r6p0 driver (API 800) is replaced by ARM's GPL r6p2-01rel0 driver (API 900, `downloads/mali-utgard-r6p2.tgz`); the patch adds the vendor sc8830 platform glue and limits external-memory binds to fb0. See [docs/gpu.md](../docs/gpu.md) |
 | 0012 | sprdfb: `skip_vt_switch`, so the suspend console switch does not kill Xorg (fbdev cannot re-enter its VT) |
 | 0013 | sprdfb: report the real 32 bpp channel order (R in the low byte); red and blue were swapped under Xorg |
+| 0014 | hci_uart: raise the Marlin BT wake line before each transmit (what Android's libbt-vendor did), so BlueZ can use the SC2331 over UART0/H4 |
 
 0007 (an Android-only cmdline fragment) is intentionally not included.
 The Binder, mmap, ambient-capability and AIO patches came from an Android 12

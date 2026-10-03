@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Rotate screen
+Name[ko]=화면 회전
+Comment=Portrait, landscape or upside down (applied immediately)
+Comment[ko]=세로, 가로, 뒤집힌 세로 (바로 적용)
+Exec=sm-t280-rotate --menu
+Icon=object-rotate-right
+Categories=Settings;DesktopSettings;

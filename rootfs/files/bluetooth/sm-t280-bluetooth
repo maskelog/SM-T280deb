@@ -1,0 +1,47 @@
+#!/bin/sh
+### BEGIN INIT INFO
+# Provides:          sm-t280-bluetooth
+# Required-Start:    $local_fs sm-t280-wifi
+# Required-Stop:
+# Should-Start:      dbus
+# Default-Start:     2 3 4 5
+# Default-Stop:      0 1 6
+# Short-Description: SC2331 (Marlin) Bluetooth on UART0 (pskey + btattach)
+### END INIT INFO
+# Needs the Marlin firmware running (sm-t280-wifi starts it) and, from your
+# own Android system, /system/lib/libbt-vendor.so and
+# /system/etc/connectivity_configure.ini (device/extract-android-blobs.sh).
+# The BD address is read from the EFS partition, mounted read-only on /efs.
+PID=/run/sm-t280-btattach.pid
+log() { echo "sm-t280-bluetooth: $*" > /dev/kmsg; }
+efs() {   # mount the EFS partition read-only (BD address)
+    mountpoint -q /efs && return 0
+    for u in /sys/class/block/mmcblk0p*/uevent; do
+        grep -q '^PARTNAME=efs$' "$u" || continue
+        mkdir -p /efs
+        mount -o ro,noload "/dev/$(sed -n 's/^DEVNAME=//p' "$u")" /efs && return 0
+    done
+    return 1
+}
+case "$1" in
+start)
+    [ -f /system/lib/libbt-vendor.so ] || { log "no /system/lib/libbt-vendor.so (see device/extract-android-blobs.sh)"; exit 0; }
+    efs || log "EFS not mounted: default BD address"
+    # the firmware loader runs in the background of sm-t280-wifi
+    for i in $(seq 1 90); do [ -d /sys/class/net/wlan0 ] && break; sleep 1; done
+    start-stop-daemon --start --background --make-pidfile --pidfile "$PID" \
+        --exec /usr/bin/python3 --startas /usr/local/sbin/sm-t280-bt-init
+    for i in $(seq 1 15); do [ -d /sys/class/bluetooth/hci0 ] && break; sleep 1; done
+    if [ -d /sys/class/bluetooth/hci0 ]; then log "hci0 up"; else log "hci0 did not appear"; fi
+    ;;
+stop)
+    start-stop-daemon --stop --quiet --retry 3 --pidfile "$PID" --remove-pidfile
+    ;;
+restart|force-reload)
+    "$0" stop; "$0" start
+    ;;
+*)
+    echo "usage: $0 start|stop|restart" >&2; exit 2
+    ;;
+esac
+exit 0

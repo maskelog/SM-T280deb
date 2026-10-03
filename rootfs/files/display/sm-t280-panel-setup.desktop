@@ -1,0 +1,5 @@
+[Desktop Entry]
+Type=Application
+Name=SM-T280 panel setup
+Exec=sm-t280-panel-setup
+NoDisplay=true

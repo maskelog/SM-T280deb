@@ -1,0 +1,124 @@
+Description: RandR rotation (xrandr -o) on top of the shadow framebuffer
+
+--- a/src/fbdev.c
++++ b/src/fbdev.c
+@@ -73,10 +73,31 @@
+ static Bool	FBDevDGAInit(ScrnInfoPtr pScrn, ScreenPtr pScreen);
+ static Bool	FBDevDriverFunc(ScrnInfoPtr pScrn, xorgDriverFuncOp op,
+ 				pointer ptr);
++static Bool	FBDevRandRRotate(ScrnInfoPtr pScrn, Rotation rr);
+ 
+ 
+ enum { FBDEV_ROTATE_NONE=0, FBDEV_ROTATE_CW=270, FBDEV_ROTATE_UD=180, FBDEV_ROTATE_CCW=90 };
+ 
++/*
++ * RandR rotation (xrandr -o, display settings) on top of the shadow
++ * framebuffer. The orientation the server starts with (Option "Rotate") is
++ * RandR "normal"; a RandR rotation is applied on top of it, so the screen
++ * size swaps for 90/270 and the shadow update rotates accordingly.
++ */
++static int
++fbdevAddRotation(int base, Rotation rr)
++{
++    int deg = 0;
++
++    switch (rr & 0xf) {
++    case RR_Rotate_90:  deg = 90;  break;    /* counter-clockwise */
++    case RR_Rotate_180: deg = 180; break;
++    case RR_Rotate_270: deg = 270; break;
++    default:            deg = 0;   break;
++    }
++    return (base + deg) % 360;
++}
++
+ 
+ /* -------------------------------------------------------------------- */
+ 
+@@ -184,6 +205,8 @@
+ 	int				fboff;
+ 	int				lineLength;
+ 	int				rotate;
++	int				baseRotate;	/* Option "Rotate" = RandR normal */
++	Bool				rrRotate;	/* RandR rotation available */
+ 	Bool				shadowFB;
+         Bool                            shadow24;
+ 	void				*shadow;
+@@ -844,6 +867,11 @@
+ 		}
+ 	}
+ 
++	fPtr->baseRotate = fPtr->rotate;
++	fPtr->rrRotate = fPtr->shadowFB && !fPtr->shadow24 &&
++			 fPtr->rotate != FBDEV_ROTATE_CW &&
++			 fPtr->rotate != FBDEV_ROTATE_CCW;
++
+ 	if(fPtr->rotate && !fPtr->PointerMoved) {
+ 		fPtr->PointerMoved = pScrn->PointerMoved;
+ 		pScrn->PointerMoved = FBDevPointerMoved;
+@@ -952,7 +980,8 @@
+ 	  xf86DrvMsg(pScrn->scrnIndex, X_INFO, "using driver rotation; disabling "
+ 			                "XRandR\n");
+ #if GET_ABI_MAJOR(ABI_VIDEODRV_VERSION) < 24
+-	  xf86DisableRandR();
++	  if (!fPtr->rrRotate)
++	    xf86DisableRandR();
+ #endif
+ 	  if (pScrn->bitsPerPixel == 24)
+ 	    xf86DrvMsg(pScrn->scrnIndex, X_WARNING, "rotation might be broken at 24 "
+@@ -1271,7 +1300,56 @@
+ 	    flag = (CARD32*)ptr;
+ 	    (*flag) = 0;
+ 	    return TRUE;
++	case RR_GET_INFO:
++	    if (FBDEVPTR(pScrn) && FBDEVPTR(pScrn)->rrRotate)
++		((xorgRRRotation *)ptr)->RRRotations =
++		    RR_Rotate_0 | RR_Rotate_90 | RR_Rotate_180 | RR_Rotate_270;
++	    return TRUE;
++	case RR_SET_CONFIG:
++	    if (!FBDEVPTR(pScrn) || !FBDEVPTR(pScrn)->rrRotate)
++		return FALSE;
++	    return FBDevRandRRotate(pScrn,
++		    ((xorgRRRotation *)ptr)->RRConfig.rotation);
+ 	default:
+ 	    return FALSE;
+     }
+ }
++
++static Bool
++FBDevRandRRotate(ScrnInfoPtr pScrn, Rotation rr)
++{
++    FBDevPtr fPtr = FBDEVPTR(pScrn);
++    ScreenPtr pScreen = xf86ScrnToScreen(pScrn);
++    PixmapPtr pPixmap;
++    int newRotate = fbdevAddRotation(fPtr->baseRotate, rr);
++    int width, height, Bpp = (pScrn->bitsPerPixel + 7) / 8;
++    void (*update)(ScreenPtr, shadowBufPtr);
++
++    if (newRotate == fPtr->rotate)
++	return TRUE;
++
++    /* pScrn->virtualX/Y stay in the start-up (RandR normal) orientation */
++    if (rr & (RR_Rotate_90 | RR_Rotate_270)) {
++	width = pScrn->virtualY;
++	height = pScrn->virtualX;
++    } else {
++	width = pScrn->virtualX;
++	height = pScrn->virtualY;
++    }
++
++    pPixmap = pScreen->GetScreenPixmap(pScreen);
++    shadowRemove(pScreen, pPixmap);
++    if (!pScreen->ModifyPixmapHeader(pPixmap, width, height, -1, -1,
++				     width * Bpp, NULL))
++	return FALSE;
++    pScrn->displayWidth = width;
++    fPtr->rotate = newRotate;
++    update = fPtr->rotate ? fbdevUpdateRotatePacked : fbdevUpdatePacked;
++    if (!shadowAdd(pScreen, pPixmap, update, FBDevWindowLinear,
++		   fPtr->rotate, NULL))
++	return FALSE;
++
++    xf86DrvMsg(pScrn->scrnIndex, X_INFO, "RandR rotation: %dx%d, rotate %d\n",
++	       width, height, fPtr->rotate);
++    return TRUE;
++}

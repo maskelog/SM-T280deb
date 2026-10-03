@@ -18,7 +18,7 @@ if [ ! -x "$WORK/toolchain/bin/arm-eabi-gcc" ]; then
     sed -n '/^diff --git/,$p' "$REPO/kernel/ambient-caps/58319057b784-capabilities-ambient.patch" \
         | patch -d "$WORK/kernel" -p1 --batch --no-backup-if-mismatch > /dev/null
     python3 "$REPO/kernel/ambient-caps/adapt-prctl-3.10.py" "$WORK/kernel"
-    for p in 0009 0010 0012 0013; do
+    for p in 0009 0010 0012 0013 0014; do
         patch -d "$WORK/kernel" -p1 --batch --fuzz=0 < "$REPO"/kernel/patches/$p-*.patch > /dev/null
     done
     # Mali-400: vendor r6p0 (API 800) -> ARM r6p2 (API 900) + sc8830 glue

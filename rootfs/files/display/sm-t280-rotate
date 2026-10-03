@@ -1,40 +1,167 @@
-#!/bin/sh
-# Set the SM-T280 screen orientation and restart the X session.
-#   sm-t280-rotate portrait | landscape-home-right | landscape-home-left
-# The fbdev driver can only rotate at X server start ("Rotate" option), so the
-# Xorg config and the touchscreen calibration are rewritten and the display
-# service is restarted. The choice is kept in /etc/sm-t280-rotation.
-# The panel scans out upside down, hence "UD" for normal portrait.
-set -eu
-case "${1:-}" in
-portrait)             ROT=UD;  MATRIX="1 0 0 0 1 0 0 0 1" ;;
-landscape-home-right) ROT=CCW; MATRIX="0 1 0 -1 0 1 0 0 1" ;;
-landscape-home-left)  ROT=CW;  MATRIX="0 -1 1 1 0 0 0 0 1" ;;
-*) echo "usage: $0 portrait|landscape-home-right|landscape-home-left" >&2; exit 2 ;;
-esac
-[ "$(id -u)" = 0 ] || exec sudo -n "$0" "$1"
-cat > /etc/X11/xorg.conf.d/10-sm-t280-fbdev.conf <<CONF
-# SM-T280 sprdfb framebuffer (written by sm-t280-rotate: $1)
-Section "Device"
-    Identifier "sprdfb"
-    Driver     "fbdev"
-    Option     "fbdev" "/dev/fb0"
-    Option     "ShadowFB" "on"
-    Option     "Rotate" "$ROT"
-EndSection
-CONF
-cat > /etc/X11/xorg.conf.d/20-sm-t280-touch.conf <<CONF
-# SM-T280 sec_touchscreen calibration (written by sm-t280-rotate: $1)
-Section "InputClass"
-    Identifier     "sm-t280 touchscreen"
-    MatchProduct   "sec_touchscreen"
-    MatchDriver    "libinput"
-    Option         "CalibrationMatrix" "$MATRIX"
-EndSection
-CONF
-echo "$1" > /etc/sm-t280-rotation
-sync
-# Restart detached: this script may run inside the session being restarted.
-setsid sh -c '/etc/init.d/sm-t280-display stop; sleep 2; pkill -x Xorg || true; sleep 2; /etc/init.d/sm-t280-display start' \
-    > /dev/null 2>&1 < /dev/null &
-echo "orientation: $1 (X session restarting)"
+#!/usr/bin/python3
+"""Screen orientation for the SM-T280 desktop, applied live through RandR.
+
+  sm-t280-rotate portrait | landscape-home-left | landscape-home-right |
+                 portrait-upside-down        set the orientation
+  sm-t280-rotate --menu                      touch menu (panel button)
+  sm-t280-rotate --watch                     session helper (autostart)
+
+The patched fbdev driver rotates the shadow framebuffer on "xrandr -o", so the
+X session keeps running. --watch restores the saved orientation at login and,
+on every RandR change (from this tool, xrandr or the XFCE display settings),
+sets the touchscreen calibration and remembers the orientation in
+~/.config/sm-t280/rotation.
+"""
+import os
+import select
+import subprocess
+import sys
+import time
+
+# The touch panel reports Y up to 1264 of 1280 at the home-button edge
+# (measured), so the last strip there was unreachable; stretch Y to fit.
+SY = "%.6f" % (1280 / 1264)
+
+# name: (xrandr -o value, touch calibration matrix, label)
+# matrix = rotation x diag(1, SY, 1), in libinput's normalized coordinates
+ORIENTATIONS = {
+    "portrait": ("normal", "1 0 0 0 %s 0 0 0 1" % SY, "세로  Portrait"),
+    "landscape-home-left": ("left", "0 -%s 1 1 0 0 0 0 1" % SY, "가로 (홈 버튼 왼쪽)  Landscape"),
+    "landscape-home-right": ("right", "0 %s 0 -1 0 1 0 0 1" % SY, "가로 (홈 버튼 오른쪽)  Landscape, flipped"),
+    "portrait-upside-down": ("inverted", "-1 0 1 0 -%s 1 0 0 1" % SY, "세로 (뒤집힘)  Portrait, upside down"),
+}
+BY_RANDR = {v[0]: k for k, v in ORIENTATIONS.items()}
+STATE = os.path.expanduser("~/.config/sm-t280/rotation")
+TOUCH = "sec_touchscreen"
+
+
+def current():
+    out = subprocess.run(["xrandr", "-q"], stdout=subprocess.PIPE, text=True).stdout
+    for line in out.splitlines():
+        if " connected" in line:
+            words = line.split("(")[0].split()
+            for rr in ("left", "right", "inverted"):
+                if rr in words:
+                    return BY_RANDR[rr]
+            return "portrait"
+    return "portrait"
+
+
+def set_touch(name):
+    matrix = ORIENTATIONS[name][1].split()
+    subprocess.run(["xinput", "set-prop", TOUCH, "libinput Calibration Matrix"] + matrix,
+                   stderr=subprocess.DEVNULL)
+
+
+def save(name):
+    os.makedirs(os.path.dirname(STATE), exist_ok=True)
+    with open(STATE + ".tmp", "w") as f:
+        f.write(name + "\n")
+    os.replace(STATE + ".tmp", STATE)
+
+
+def rotate(name):
+    subprocess.run(["xrandr", "-o", ORIENTATIONS[name][0]], check=True)
+    set_touch(name)       # --watch does this too; do it here for scripts without it
+    save(name)
+
+
+def wait_for_session():
+    """At login the X server and the touchscreen may not be ready yet."""
+    for _ in range(60):
+        r = subprocess.run(["xinput", "list", "--name-only"], stdout=subprocess.PIPE,
+                           stderr=subprocess.DEVNULL, text=True)
+        if r.returncode == 0 and TOUCH in r.stdout.splitlines():
+            return
+        time.sleep(1)
+
+
+def watch():
+    wait_for_session()
+    try:
+        with open(STATE) as f:
+            saved = f.read().strip()
+    except OSError:
+        saved = "portrait"
+    # XFCE's display settings (xfsettingsd) may restore a rotation of their
+    # own at login; only restore ours if the screen is still in the default.
+    time.sleep(3)
+    if saved in ORIENTATIONS and saved != "portrait" and current() == "portrait":
+        subprocess.run(["xrandr", "-o", ORIENTATIONS[saved][0]])
+    last = None
+    while True:
+        # xev prints a block per RRScreenChangeNotify; re-check the state on
+        # each one (and every few seconds, in case an event was missed)
+        xev = subprocess.Popen(["xev", "-root", "-event", "randr"], stdout=subprocess.PIPE, text=True)
+        while True:
+            name = current()
+            if name != last:
+                set_touch(name)
+                save(name)
+                print("orientation: %s" % name, flush=True)
+                last = name
+            if not select.select([xev.stdout], [], [], 5)[0]:
+                continue
+            line = xev.stdout.readline()
+            if not line:
+                break                          # X went away or xev died: retry
+        xev.wait()
+        if subprocess.run(["xrandr", "-q"], stdout=subprocess.DEVNULL,
+                          stderr=subprocess.DEVNULL).returncode != 0:
+            return 0                           # session ended
+        time.sleep(1)
+
+
+def menu():
+    import gi
+    gi.require_version("Gtk", "3.0")
+    from gi.repository import Gtk
+
+    now = current()
+    win = Gtk.Window(title="화면 방향  Rotation")
+    win.set_position(Gtk.WindowPosition.CENTER_ALWAYS)
+    win.set_keep_above(True)
+    win.set_decorated(False)
+    box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+    box.set_border_width(20)
+    win.add(box)
+    choice = []
+
+    def pick(_b, name):
+        choice.append(name)
+        win.destroy()
+
+    for name, (_rr, _m, label) in ORIENTATIONS.items():
+        b = Gtk.Button(label=("✓ " if name == now else "") + label)
+        b.set_size_request(440, 80)
+        b.connect("clicked", pick, name)
+        box.pack_start(b, False, False, 0)
+    cancel = Gtk.Button(label="취소  Cancel")
+    cancel.set_size_request(440, 64)
+    cancel.connect("clicked", lambda *_: win.destroy())
+    box.pack_start(cancel, False, False, 0)
+    win.connect("destroy", Gtk.main_quit)
+    win.show_all()
+    Gtk.main()
+    if choice and choice[0] != now:
+        rotate(choice[0])
+    return 0
+
+
+def main(argv):
+    if not os.environ.get("DISPLAY"):
+        os.environ["DISPLAY"] = ":0"
+    arg = argv[1] if len(argv) > 1 else ""
+    if arg == "--watch":
+        return watch()
+    if arg == "--menu":
+        return menu()
+    if arg in ORIENTATIONS:
+        rotate(arg)
+        return 0
+    print("usage: sm-t280-rotate %s | --menu | --watch" % " | ".join(ORIENTATIONS), file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

@@ -1,0 +1,37 @@
+Bluetooth: hci_uart: wake the Marlin (SC2331) BT core before transmitting
+
+The SC2331 BT core sleeps between transfers and stops the UART (RTS) until
+the host raises its wake line, which Android's libbt-vendor did through
+/proc/bluetooth/sleep/btwrite before each transmit. Do the same in the
+hci_uart write work, so BlueZ can drive the chip with the in-kernel H4 driver.
+
+--- a/drivers/bluetooth/hci_ldisc.c
++++ b/drivers/bluetooth/hci_ldisc.c
+@@ -130,6 +130,11 @@
+ 	return 0;
+ }
+ 
++#ifdef CONFIG_SPRD_2331
++/* sprd_lpm.c: assert the host->Marlin wake line (BT user). */
++extern void bt_wakeup(unsigned int chn, unsigned int user_id);
++#endif
++
+ static void hci_uart_write_work(struct work_struct *work)
+ {
+ 	struct hci_uart *hu = container_of(work, struct hci_uart, write_work);
+@@ -143,6 +148,15 @@
+ 
+ restart:
+ 	clear_bit(HCI_UART_TX_WAKEUP, &hu->tx_state);
++#ifdef CONFIG_SPRD_2331
++	/*
++	 * The Marlin (SC2331) BT core sleeps between transfers and holds
++	 * its RTS line until the host raises the wake line; Android's
++	 * libbt-vendor did this before every transmit. Data written meanwhile
++	 * waits in the UART (hardware flow control).
++	 */
++	bt_wakeup(0xff, 0x2);
++#endif
+ 
+ 	while ((skb = hci_uart_dequeue(hu))) {
+ 		int len;

@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=SM-T280 on-screen keyboard helper
+Comment=Hides Onboard while a hardware (Bluetooth/USB) keyboard is connected
+Exec=sh -c 'mkdir -p "$HOME/.cache" && exec sm-t280-osk-watch >> "$HOME/.cache/sm-t280-osk-watch.log" 2>&1'
+NoDisplay=true
+X-XFCE-Autostart-Override=true

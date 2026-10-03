@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Extract the Wi-Fi firmware loader and firmware from YOUR OWN SM-T280 Android
+# Extract the Wi-Fi firmware loader and firmware, and the Bluetooth vendor
+# library (only its default pskey block is read), from YOUR OWN SM-T280 Android
 # system partition. These files are proprietary and are not distributed here.
 #
 #   extract-android-blobs.sh <system.img | mounted-system-dir> <output-dir>
@@ -13,7 +14,7 @@ set -euo pipefail
 SRC=$1; DST=$2/system
 command -v readelf > /dev/null || { echo "needs readelf (binutils)"; exit 1; }
 FILES="bin/linker bin/download etc/connectivity_calibration.ini etc/connectivity_configure.ini
-       etc/firmware/sc2331_fdl.bin etc/firmware/sc2331_fw.bin"
+       etc/firmware/sc2331_fdl.bin etc/firmware/sc2331_fw.bin lib/libbt-vendor.so"
 get() {   # path relative to /system
     mkdir -p "$DST/$(dirname "$1")"
     if [ -d "$SRC" ]; then

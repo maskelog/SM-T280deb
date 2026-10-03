@@ -1,0 +1,58 @@
+#!/usr/bin/python3
+"""Hide the on-screen keyboard (Onboard) while a real keyboard is connected.
+
+Session helper (autostart). Every couple of seconds it lists the X slave
+keyboards; anything that is not one of the tablet's own key devices (power and
+volume keys, touch keys, headset button) counts as a hardware keyboard, e.g. a
+Bluetooth or USB keyboard. While one is present Onboard is hidden and its
+auto-show is paused; when the last one goes away auto-show is resumed.
+"""
+import re
+import subprocess
+import sys
+import time
+
+BUILTIN = {"Virtual core XTEST keyboard", "sci-keypad", "sec_touchkey",
+           "headset-keyboard", "meta_event", "sec_touchscreen"}
+OSK = ["--session", "--dest", "org.onboard.Onboard",
+       "--object-path", "/org/onboard/Onboard/Keyboard"]
+
+
+def hardware_keyboards():
+    out = subprocess.run(["xinput", "list", "--short"], stdout=subprocess.PIPE,
+                         stderr=subprocess.DEVNULL, text=True).stdout
+    names = []
+    for line in out.splitlines():
+        if "slave  keyboard" not in line:
+            continue
+        name = re.sub(r"^[^A-Za-z0-9]*", "", line.split("\tid=")[0]).strip()
+        if name not in BUILTIN and not name.endswith(" XTEST keyboard"):
+            names.append(name)
+    return names
+
+
+def onboard(paused):
+    """Pause/resume Onboard's auto-show; hide it when pausing."""
+    r = subprocess.run(["gdbus", "call"] + OSK + [
+        "--method", "org.freedesktop.DBus.Properties.Set", "org.onboard.Onboard.Keyboard",
+        "AutoShowPaused", "<%s>" % ("true" if paused else "false")],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if paused and r.returncode == 0:
+        subprocess.run(["gdbus", "call"] + OSK + ["--method", "org.onboard.Onboard.Keyboard.Hide"],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return r.returncode == 0
+
+
+def main():
+    state = None          # last state Onboard accepted
+    while True:
+        kbds = hardware_keyboards()
+        want = bool(kbds)
+        if want != state and onboard(want):
+            print("hardware keyboard %s: %s" % ("connected" if want else "gone", ", ".join(kbds)), flush=True)
+            state = want
+        time.sleep(2)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

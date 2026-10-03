@@ -29,8 +29,8 @@ KREL=$(strings "$OUT/kernel/Image" | sed -n 's/^Linux version \([^ ]*\) .*/\1/p'
 # lib -> usr/lib with real directories; create parents with mkdir -p instead.
 put() { mkdir -p "$(dirname "${@: -1}")"; install "$@"; }
 
-PKGS=sysvinit-core,sysv-rc,initscripts,orphan-sysvinit-scripts,udev,kmod,procps,iproute2,ifupdown,iputils-ping,openssh-server,sudo,dnsmasq-base,wpasupplicant,iw,wireless-regdb,ca-certificates,nano,less,busybox-static,e2fsprogs,util-linux,ntpsec-ntpdate,locales,tzdata,python3
-[ "$DESKTOP" = 1 ] && PKGS=$PKGS,xserver-xorg-core,xserver-xorg-video-fbdev,xserver-xorg-input-libinput,xserver-xorg-legacy,xinit,x11-xserver-utils,xinput,xfce4-session,xfwm4,xfce4-panel,xfdesktop4,xfce4-settings,xfce4-terminal,thunar,dbus-x11,onboard,onboard-data,gsettings-desktop-schemas,at-spi2-core,gir1.2-atspi-2.0,xdg-utils,libglib2.0-bin,dconf-gsettings-backend,dconf-service,wpagui,elementary-xfce-icon-theme,qt5-gtk-platformtheme,fonts-dejavu-core,fonts-nanum,adwaita-icon-theme,elogind,libpam-elogind,polkitd,upower,xfce4-power-manager,xfce4-screensaver,python3-gi,gir1.2-gtk-3.0
+PKGS=sysvinit-core,sysv-rc,initscripts,orphan-sysvinit-scripts,udev,kmod,procps,iproute2,ifupdown,iputils-ping,openssh-server,sudo,dnsmasq-base,wpasupplicant,iw,wireless-regdb,ca-certificates,nano,less,busybox-static,e2fsprogs,util-linux,ntpsec-ntpdate,locales,tzdata,python3,curl,bluez
+[ "$DESKTOP" = 1 ] && PKGS=$PKGS,xserver-xorg-core,xserver-xorg-video-fbdev,xserver-xorg-input-libinput,xserver-xorg-legacy,xinit,x11-xserver-utils,x11-utils,xinput,xfce4-session,xfwm4,xfce4-panel,xfdesktop4,xfce4-settings,xfce4-terminal,thunar,dbus-x11,onboard,onboard-data,gsettings-desktop-schemas,at-spi2-core,gir1.2-atspi-2.0,xdg-utils,libglib2.0-bin,dconf-gsettings-backend,dconf-service,wpagui,elementary-xfce-icon-theme,qt5-gtk-platformtheme,fonts-dejavu-core,fonts-nanum,adwaita-icon-theme,elogind,libpam-elogind,polkitd,upower,xfce4-power-manager,xfce4-screensaver,python3-gi,gir1.2-gtk-3.0,blueman,xfce4-notifyd
 
 # Never delete through leftover bind mounts (/dev, /proc, /sys) of an interrupted run.
 if grep -q " $ROOT/" /proc/mounts; then
@@ -107,6 +107,44 @@ install -m 755 "$F/power/sm-t280-power" "$ROOT/etc/init.d/sm-t280-power"
 put -m 644 "$F/power/power.conf" "$ROOT/etc/sm-t280/power.conf"
 chroot "$ROOT" update-rc.d sm-t280-power defaults > /dev/null
 
+# xserver-xorg-video-fbdev with RandR rotation (rootfs/files/display/
+# fbdev-randr-rotation.patch), built from the Debian source inside the
+# target (qemu) and held so apt keeps it. Build dependencies are removed again.
+build_fbdev_randr() {
+    local src=/var/tmp/fbdev-src
+    echo "deb-src http://deb.debian.org/debian trixie main" > "$ROOT/etc/apt/sources.list.d/fbdev-src.list"
+    chroot "$ROOT" apt-get update -qq
+    chroot "$ROOT" apt-mark showmanual > "$WORK/manual.before"
+    chroot "$ROOT" env DEBIAN_FRONTEND=noninteractive apt-get build-dep -y -qq xserver-xorg-video-fbdev > /dev/null
+    chroot "$ROOT" env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends dpkg-dev fakeroot > /dev/null
+    rm -rf "$ROOT$src"; mkdir -p "$ROOT$src"
+    chroot "$ROOT" sh -c "cd $src && apt-get source -qq xserver-xorg-video-fbdev" > /dev/null
+    local d; d=$(ls -d "$ROOT$src"/xserver-xorg-video-fbdev-*/)
+    install -m 644 "$F/display/fbdev-randr-rotation.patch" "$d/debian/patches/90-randr-rotation.patch"
+    echo 90-randr-rotation.patch >> "$d/debian/patches/series"
+    # local version suffix, so the package is recognisably ours
+    sed -i '1s/(\([^)]*\))/(\1+smt280.1)/' "$d/debian/changelog"
+    chroot "$ROOT" sh -c "cd ${d#$ROOT} && dpkg-buildpackage -us -uc -b" > "$WORK/fbdev-build.log" 2>&1
+    chroot "$ROOT" sh -c "dpkg -i $src/xserver-xorg-video-fbdev_*smt280*_armhf.deb" > /dev/null
+    chroot "$ROOT" apt-mark hold xserver-xorg-video-fbdev > /dev/null
+    # drop the build dependencies again
+    chroot "$ROOT" apt-mark showmanual | grep -vxF -f "$WORK/manual.before" | xargs -r chroot "$ROOT" apt-mark auto > /dev/null
+    chroot "$ROOT" env DEBIAN_FRONTEND=noninteractive apt-get autoremove -y -qq --purge > /dev/null
+    rm -rf "$ROOT$src" "$ROOT/etc/apt/sources.list.d/fbdev-src.list"
+    chroot "$ROOT" apt-get update -qq
+}
+
+# Bluetooth: SC2331 core on UART0 (pskey from your own libbt-vendor.so and
+# connectivity_configure.ini, BD address from EFS), attached to hci_uart.
+# BlueZ must use the in-kernel HIDP: 3.10 has no UHID_CREATE2.
+install -m 755 "$F/bluetooth/sm-t280-bt-init" "$ROOT/usr/local/sbin/sm-t280-bt-init"
+install -m 755 "$F/bluetooth/sm-t280-bt-pair" "$ROOT/usr/local/bin/sm-t280-bt-pair"
+install -m 755 "$F/bluetooth/sm-t280-bluetooth" "$ROOT/etc/init.d/sm-t280-bluetooth"
+sed -i 's/^#UserspaceHID=true/# SM-T280: the 3.10 kernel has no UHID_CREATE2, use the in-kernel HIDP\nUserspaceHID=false/' \
+    "$ROOT/etc/bluetooth/input.conf"
+grep -q '^UserspaceHID=false' "$ROOT/etc/bluetooth/input.conf"
+chroot "$ROOT" update-rc.d sm-t280-bluetooth defaults > /dev/null
+
 # Kernel module (Wi-Fi driver)
 put -m 644 "$OUT/kernel/sprdwl.ko" "$ROOT/lib/modules/$KREL/extra/sprdwl.ko"
 chroot "$ROOT" depmod -a "$KREL" 2>/dev/null
@@ -124,11 +162,17 @@ if [ "$DESKTOP" = 1 ]; then
     install -m 644 "$F/display/90_sm-t280-onboard.gschema.override" "$ROOT/usr/share/glib-2.0/schemas/"
     chroot "$ROOT" glib-compile-schemas /usr/share/glib-2.0/schemas
     # Orientation switcher (portrait / landscape), also offered in the XFCE menu
-    install -m 755 "$F/display/sm-t280-rotate" "$ROOT/usr/local/sbin/sm-t280-rotate"
-    visudo -c -q -f "$F/display/91-sm-t280-rotate.sudoers"
-    install -m 440 "$F/display/91-sm-t280-rotate.sudoers" "$ROOT/etc/sudoers.d/91-sm-t280-rotate"
-    install -m 644 "$F"/display/sm-t280-rotate-*.desktop "$ROOT/usr/share/applications/"
-    echo portrait > "$ROOT/etc/sm-t280-rotation"
+    # Live rotation: fbdev driver rebuilt with RandR rotation (xrandr -o), the
+    # rotate tool/menu, a session helper that keeps the touchscreen aligned,
+    # and a one-time panel button.
+    build_fbdev_randr
+    # (plus: hide Onboard while a hardware keyboard is connected)
+    install -m 755 "$F/display/sm-t280-rotate" "$F/display/sm-t280-panel-setup" \
+        "$F/display/sm-t280-osk-watch" "$ROOT/usr/local/bin/"
+    install -m 644 "$F/display/sm-t280-rotate.desktop" "$ROOT/usr/share/applications/"
+    for a in sm-t280-rotate-watch sm-t280-panel-setup sm-t280-osk-watch; do
+        install -m 644 -o 1000 -g 1000 "$F/display/$a.desktop" "$ROOT/home/debian/.config/autostart/$a.desktop"
+    done
     # Wi-Fi in the panel: wpa_gui tray applet (DHCP is run by the wpa_cli action script)
     install -m 644 -o 1000 -g 1000 "$F/wifi/wpa_gui-autostart.desktop" "$ROOT/home/debian/.config/autostart/wpa_gui.desktop"
     put -m 644 -o 1000 -g 1000 "$F/display/xsettings.xml"         "$ROOT/home/debian/.config/xfce4/xfconf/xfce-perchannel-xml/xsettings.xml"

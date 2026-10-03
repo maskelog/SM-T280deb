@@ -1,0 +1,207 @@
+#!/usr/bin/python3
+"""Bring up the SC2331 (Marlin) Bluetooth core on /dev/ttyS0 for BlueZ.
+
+The Marlin firmware is already running (loaded for Wi-Fi by the Android
+`download` helper). Bluetooth sits on UART0 at 3 Mbit/s, H4. Before the host
+stack may use it, the chip needs its "pskey" configuration block: a vendor
+HCI command 0xFCA0 with a 196-byte payload. This mirrors what Android's
+libbt-vendor (Spreadtrum) does:
+
+  defaults  : the 200-byte default block inside YOUR libbt-vendor.so
+              (extracted from your own system image, never shipped here)
+  overrides : [SETCTION 6] of connectivity_configure.ini (also yours)
+  address   : /efs/bluetooth/bt_addr (the tablet's own BD address)
+
+Afterwards the port is handed to the kernel (hci_uart line discipline, H4)
+and this process keeps it open. Unlike btattach it does not ask for
+"reset on init": the core needs ~0.5 s after HCI_Reset before it answers
+again, and the kernel's init would read the feature bits in that window
+(they came back empty, so SSP pairing was unavailable).
+
+  sm-t280-bt-init [--no-attach]
+"""
+import fcntl
+import os
+import select
+import signal
+import struct
+import subprocess
+import sys
+import termios
+import time
+
+TTY = "/dev/ttyS0"
+LIB = "/system/lib/libbt-vendor.so"
+INI = "/system/etc/connectivity_configure.ini"
+BT_ADDR = "/efs/bluetooth/bt_addr"
+SLEEP = "/proc/bluetooth/sleep/btwrite"
+PSKEY_OPCODE = 0xFCA0
+PSKEY_SIZE = 200
+
+# name: (offset, element size) - the field table of the Marlin pskey block
+FIELDS = {
+    "pskey_cmd": (0x00, 4),
+    "g_dbg_source_sink_syn_test_data": (0x04, 1),
+    "g_sys_sleep_in_standby_supported": (0x05, 1),
+    "g_sys_sleep_master_supported": (0x06, 1),
+    "g_sys_sleep_slave_supported": (0x07, 1),
+    "default_ahb_clk": (0x08, 4),
+    "device_class": (0x0C, 4),
+    "win_ext": (0x10, 4),
+    "g_aGainValue": (0x14, 4),
+    "g_aPowerValue": (0x2C, 4),
+    "feature_set": (0x40, 1),
+    "device_addr": (0x50, 1),
+    "g_sys_sco_transmit_mode": (0x56, 1),
+    "g_sys_uart0_communication_supported": (0x57, 1),
+    "edr_tx_edr_delay": (0x58, 1),
+    "edr_rx_edr_delay": (0x59, 1),
+    "g_wbs_nv_117": (0x5A, 2),
+    "is_wdg_supported": (0x5C, 4),
+    "share_memo_rx_base_addr": (0x60, 4),
+    "g_wbs_nv_118": (0x64, 2),
+    "g_nbv_nv_117": (0x66, 2),
+    "share_memo_tx_packet_num_addr": (0x68, 4),
+    "share_memo_tx_data_base_addr": (0x6C, 4),
+    "g_PrintLevel": (0x70, 4),
+    "share_memo_tx_block_length": (0x74, 2),
+    "share_memo_rx_block_length": (0x76, 2),
+    "share_memo_tx_water_mark": (0x78, 2),
+    "g_nbv_nv_118": (0x7A, 2),
+    "uart_rx_watermark": (0x7C, 2),
+    "uart_flow_control_thld": (0x7E, 2),
+    "comp_id": (0x80, 4),
+    "pcm_clk_divd": (0x84, 2),
+    "g_aBRChannelpwrvalue": (0x88, 4),
+    "g_aEDRChannelpwrvalue": (0xA8, 4),
+}
+PACK = {1: "<B", 2: "<H", 4: "<I"}
+
+
+def log(msg):
+    print("sm-t280-bt-init: " + msg, file=sys.stderr)
+
+
+def defaults_from_lib(path):
+    """The default block is the first 200 bytes of .data + 8 in libbt-vendor."""
+    with open(path, "rb") as f:
+        elf = f.read()
+    shoff, = struct.unpack_from("<I", elf, 0x20)
+    shentsize, shnum, shstrndx = struct.unpack_from("<HHH", elf, 0x2E)
+    sh = [struct.unpack_from("<10I", elf, shoff + i * shentsize) for i in range(shnum)]
+    strtab = sh[shstrndx][4]
+    for s in sh:
+        end = elf.index(b"\0", strtab + s[0])
+        if elf[strtab + s[0]:end] == b".data":
+            block = bytearray(elf[s[4] + 8:s[4] + 8 + PSKEY_SIZE])
+            # sanity: pskey_cmd and the 26 MHz AHB clock of the stock block
+            cmd, clk = struct.unpack_from("<I4xI", block, 0)
+            if cmd != 0x001C0101 or clk != 26000000:
+                raise SystemExit("unexpected libbt-vendor.so layout (cmd %#x clk %d)" % (cmd, clk))
+            return block
+    raise SystemExit("no .data in " + path)
+
+
+def apply_ini(block, path):
+    section = None
+    with open(path, errors="replace") as f:
+        for line in f:
+            line = line.split("#", 1)[0].strip()
+            if line.startswith("["):
+                section = line
+                continue
+            if section != "[SETCTION 6]" or "=" not in line:
+                continue
+            key, val = (x.strip() for x in line.split("=", 1))
+            if key not in FIELDS:
+                continue
+            off, size = FIELDS[key]
+            for i, v in enumerate(x for x in val.split(",") if x.strip()):
+                struct.pack_into(PACK[size], block, off + i * size, int(v.strip(), 0) & ((1 << (8 * size)) - 1))
+
+
+def apply_bdaddr(block, path):
+    try:
+        with open(path) as f:
+            parts = f.read().strip().split(":")
+        addr = bytes(int(p, 16) for p in parts)
+    except (OSError, ValueError):
+        log("no BD address in %s, keeping the default" % path)
+        return
+    if len(addr) == 6:
+        block[0x50:0x56] = addr[::-1]       # little endian, as in HCI
+
+
+def open_uart():
+    fd = os.open(TTY, os.O_RDWR | os.O_NOCTTY)
+    cc = termios.tcgetattr(fd)[6]
+    cflag = termios.CS8 | termios.CREAD | termios.CLOCAL | termios.CRTSCTS
+    termios.tcsetattr(fd, termios.TCSANOW, [0, 0, cflag, 0, termios.B3000000, termios.B3000000, cc])
+    termios.tcflush(fd, termios.TCIOFLUSH)
+    return fd
+
+
+def wake():
+    """Raise the host->Marlin wake line; the BT core sleeps between transfers
+    and holds RTS until woken (the kernel does the same for hci_uart)."""
+    try:
+        with open(SLEEP, "w") as f:
+            f.write("1")
+    except OSError as e:
+        log("%s: %s" % (SLEEP, e))
+
+
+def hci_cmd(fd, opcode, params=b"", timeout=2.0):
+    wake()
+    time.sleep(0.02)
+    os.write(fd, struct.pack("<BHB", 1, opcode, len(params)) + params)
+    buf = b""
+    end = time.time() + timeout
+    while time.time() < end:
+        r, _, _ = select.select([fd], [], [], 0.1)
+        if not r:
+            continue
+        buf += os.read(fd, 1024)
+        while len(buf) >= 3 and buf[0] == 4 and len(buf) >= 3 + buf[2]:
+            evt, plen = buf[1], buf[2]
+            payload, buf = buf[3:3 + plen], buf[3 + plen:]
+            if evt == 0x0E and struct.unpack_from("<H", payload, 1)[0] == opcode:
+                return payload[3:]
+            if evt == 0x0F and struct.unpack_from("<H", payload, 2)[0] == opcode:
+                return payload[0:1]
+        if buf and buf[0] != 4:
+            buf = b""                       # resync on garbage
+    raise TimeoutError("no reply to HCI command %#06x" % opcode)
+
+
+def main(argv):
+    block = defaults_from_lib(LIB)
+    if os.path.exists(INI):
+        apply_ini(block, INI)
+    apply_bdaddr(block, BT_ADDR)
+    fd = open_uart()
+    status = hci_cmd(fd, PSKEY_OPCODE, bytes(block[4:]))
+    log("pskey status %d" % status[0])
+    status = hci_cmd(fd, 0x0C03)            # HCI_Reset
+    log("reset status %d" % status[0])
+    time.sleep(0.5)                         # the BT core restarts after reset
+    ver = hci_cmd(fd, 0x1001)               # Read_Local_Version_Information
+    log("version: %s" % ver.hex())
+    addr = hci_cmd(fd, 0x1009)              # Read_BD_ADDR
+    log("address: %s" % ":".join("%02X" % b for b in reversed(addr[1:7])))
+    if "--no-attach" in argv:
+        os.close(fd)
+        return 0
+    # hand the port to the kernel: N_HCI line discipline, H4 protocol
+    N_HCI, TIOCSETD = 15, 0x5423
+    HCIUARTSETPROTO, HCI_UART_H4 = 0x400455C8, 0
+    fcntl.ioctl(fd, TIOCSETD, struct.pack("i", N_HCI))
+    fcntl.ioctl(fd, HCIUARTSETPROTO, HCI_UART_H4)
+    log("attached %s (hci_uart, H4)" % TTY)
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+    while True:                             # keep the line discipline alive
+        signal.pause()
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

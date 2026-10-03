@@ -16,10 +16,11 @@ affiliated with Samsung or Debian. **Use at your own risk.**
 | Touchscreen | works |
 | Wi-Fi (SC2331) | works; panel applet (wpa_gui) to scan and join networks; needs the firmware loader from your own Android system |
 | USB networking (RNDIS) + serial console (ACM) | works, survives cable replug / PC re-enumeration (tablet 192.168.7.2, PC gets 192.168.7.10-99) |
-| On-screen keyboard (onboard) | works: docked at the bottom, shown when a text field is focused |
-| Screen rotation | portrait / landscape via `sm-t280-rotate` or the XFCE menu (restarts the session) |
+| On-screen keyboard (onboard) | works: docked at the bottom, shown when a text field is focused; hidden while a Bluetooth/USB keyboard is connected |
+| Screen rotation | live (no restart): rotate button on the top panel, XFCE Display settings or `xrandr -o`; 4 orientations, touch follows (patched fbdev driver with RandR rotation) |
 | Power key | short press: sleep (screen off, deep sleep without USB), press again to wake; long press: power menu (sleep, lock, restart, power off). Selectable in Settings → "Power button" |
-| Audio, camera, Bluetooth, accelerated desktop | not done |
+| Bluetooth (SC2331, UART0) | works: BlueZ + Blueman tray; tested with a keyboard. Pair with `sm-t280-bt-pair [name]` (Blueman's Pair button cancels itself); needs `libbt-vendor.so` from your own system. Wi-Fi may drop out while Bluetooth is busy (shared radio) |
+| Audio, camera, accelerated desktop | not done |
 
 ## What you need
 
@@ -59,9 +60,10 @@ python3 device/flash-boot-twrp.py out/boot.img --backup boot-before-debian.img
 adb reboot
 ```
 
-First boot takes about a minute. To change orientation use Settings → "Rotate: ..." in
-the XFCE menu or `sm-t280-rotate portrait|landscape-home-right|landscape-home-left`;
-the panel driver only rotates at X start, so the desktop restarts (~10 s).
+First boot takes about a minute. To change orientation tap the rotate button on the
+top panel (or Settings → Display, `xrandr -o left`, or `sm-t280-rotate
+portrait|landscape-home-left|landscape-home-right|portrait-upside-down`); it
+applies immediately and is restored at the next login.
  Then connect over USB (`ssh debian@192.168.7.2`)
 or pick a Wi-Fi network from the panel icon (wpa_gui), or add it in a terminal:
 `wpa_passphrase "SSID" | sudo tee -a /etc/wpa_supplicant/wpa_supplicant-wlan0.conf`.

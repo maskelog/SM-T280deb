@@ -1,0 +1,72 @@
+#!/usr/bin/python3
+"""Pair a Bluetooth device by name via BlueZ D-Bus, keeping the requester
+alive until bonding finishes (the PIN/passkey goes to the registered agent,
+i.e. the Blueman notification). Blueman's own Pair button drops its D-Bus
+request right away, which makes BlueZ cancel the pairing.
+
+  sm-t280-bt-pair [name-part]     default: Keyboard
+"""
+import sys
+import time
+
+from gi.repository import Gio, GLib
+
+name_part = sys.argv[1] if len(sys.argv) > 1 else "Keyboard"
+bus = Gio.bus_get_sync(Gio.BusType.SYSTEM)
+
+
+def call(path, iface, method, args=None, sig=None, timeout=10000):
+    return bus.call_sync("org.bluez", path, iface, method,
+                         GLib.Variant(sig, args) if sig else None,
+                         None, Gio.DBusCallFlags.NONE, timeout, None)
+
+
+def objects():
+    r = call("/", "org.freedesktop.DBus.ObjectManager", "GetManagedObjects")
+    return r.unpack()[0]
+
+
+def find():
+    for path, ifaces in objects().items():
+        dev = ifaces.get("org.bluez.Device1")
+        if dev and name_part.lower() in dev.get("Name", dev.get("Alias", "")).lower():
+            return path, dev
+    return None, None
+
+
+path, dev = find()
+if path:
+    try:
+        call("/org/bluez/hci0", "org.bluez.Adapter1", "RemoveDevice", (path,), "(o)")
+        print("removed old entry", flush=True)
+    except GLib.Error as e:
+        print("remove:", e.message, flush=True)
+call("/org/bluez/hci0", "org.bluez.Adapter1", "StartDiscovery")
+print("scanning...", flush=True)
+end = time.time() + 30
+path = None
+while time.time() < end and not path:
+    time.sleep(1)
+    path, dev = find()
+try:
+    call("/org/bluez/hci0", "org.bluez.Adapter1", "StopDiscovery")
+except GLib.Error:
+    pass
+if not path:
+    print("device not found (pairing mode on?)")
+    sys.exit(1)
+print("found", dev.get("Name"), "-> Pair (type the PIN shown in the notification, then Enter)", flush=True)
+try:
+    call(path, "org.bluez.Device1", "Pair", timeout=90000)
+    print("paired", flush=True)
+except GLib.Error as e:
+    print("pair failed:", e.message)
+    sys.exit(2)
+props = "org.freedesktop.DBus.Properties"
+call(path, props, "Set", ("org.bluez.Device1", "Trusted", GLib.Variant("b", True)), "(ssv)")
+print("trusted", flush=True)
+try:
+    call(path, "org.bluez.Device1", "Connect", timeout=30000)
+    print("connected", flush=True)
+except GLib.Error as e:
+    print("connect:", e.message)

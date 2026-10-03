@@ -1,0 +1,28 @@
+#!/bin/sh
+# One-time per user: put the screen rotation button on the top XFCE panel
+# (panel-1), right after the notification area. Runs from autostart.
+MARK="$HOME/.config/sm-t280/panel-rotate-added"
+[ -e "$MARK" ] && exit 0
+for i in $(seq 1 30); do pgrep -u "$(id -u)" -x xfce4-panel > /dev/null && break; sleep 1; done
+sleep 2
+q() { xfconf-query -c xfce4-panel "$@"; }
+ids=$(q -p /panels/panel-1/plugin-ids 2>/dev/null | tail -n +3 | grep -E '^[0-9]+$') || exit 0
+[ -n "$ids" ] || exit 0
+n=$(q -p /plugins -l | sed -n 's#^/plugins/plugin-\([0-9]*\)$#\1#p' | sort -n | tail -1)
+n=$((n + 1))
+q -p /plugins/plugin-$n -n -t string -s launcher
+mkdir -p "$HOME/.config/xfce4/panel/launcher-$n"
+cp /usr/share/applications/sm-t280-rotate.desktop "$HOME/.config/xfce4/panel/launcher-$n/"
+q -p /plugins/plugin-$n/items -n -a -t string -s sm-t280-rotate.desktop
+args=""; placed=0
+for id in $ids; do
+    args="$args -t int -s $id"
+    if [ $placed = 0 ] && [ "$(q -p /plugins/plugin-$id 2>/dev/null)" = systray ]; then
+        args="$args -t int -s $n"; placed=1
+    fi
+done
+[ $placed = 1 ] || args="$args -t int -s $n"
+# shellcheck disable=SC2086
+q -p /panels/panel-1/plugin-ids -a $args
+xfce4-panel -r
+mkdir -p "$(dirname "$MARK")" && touch "$MARK"

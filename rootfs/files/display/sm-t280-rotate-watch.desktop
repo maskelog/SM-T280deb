@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=SM-T280 rotation helper
+Comment=Restores the screen orientation and keeps the touchscreen aligned with it
+Exec=sh -c 'mkdir -p "$HOME/.cache" && exec sm-t280-rotate --watch >> "$HOME/.cache/sm-t280-rotate.log" 2>&1'
+NoDisplay=true
+X-XFCE-Autostart-Override=true
