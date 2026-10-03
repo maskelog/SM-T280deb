@@ -7,7 +7,7 @@ WORK=${WORK:-/var/tmp/sm-t280deb-kernel}
 RELEASE=${RELEASE:--sm-t280deb}
 OUT="$REPO/out/kernel"
 mkdir -p "$OUT"
-[ -f "$REPO/downloads/kernel.tar.gz" ] || "$REPO/kernel/fetch-sources.sh"
+[ -f "$REPO/downloads/mali-utgard-r6p2.tgz" ] || "$REPO/kernel/fetch-sources.sh"
 if [ ! -x "$WORK/toolchain/bin/arm-eabi-gcc" ]; then
     rm -rf "$WORK"; mkdir -p "$WORK/kernel" "$WORK/toolchain" "$WORK/out"
     tar -xzf "$REPO/downloads/toolchain.tar.gz" --strip-components=1 -C "$WORK/toolchain"
@@ -21,6 +21,12 @@ if [ ! -x "$WORK/toolchain/bin/arm-eabi-gcc" ]; then
     for p in 0009 0010; do
         patch -d "$WORK/kernel" -p1 --batch --fuzz=0 < "$REPO"/kernel/patches/$p-*.patch > /dev/null
     done
+    # Mali-400: vendor r6p0 (API 800) -> ARM r6p2 (API 900) + sc8830 glue
+    MALI="$WORK/kernel/drivers/gpu/mali400"
+    rm -rf "$MALI"; mkdir -p "$MALI"
+    tar -xzf "$REPO/downloads/mali-utgard-r6p2.tgz" --strip-components=5 -C "$MALI" \
+        DX910-SW-99002-r6p2-01rel0/driver/src/devicedrv/mali
+    patch -d "$MALI" -p1 --batch --fuzz=0 < "$REPO"/kernel/patches/0011-mali-r6p2-sc8830.patch > /dev/null
 fi
 export ARCH=arm CROSS_COMPILE="$WORK/toolchain/bin/arm-eabi-"
 MAKE=(make -C "$WORK/kernel" O="$WORK/out" HOSTCFLAGS='-O2 -fcommon' LOCALVERSION="$RELEASE")

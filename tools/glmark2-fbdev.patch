@@ -1,0 +1,199 @@
+diff --git a/meson.build b/meson.build
+index c04135f..13a86c5 100644
+--- a/meson.build
++++ b/meson.build
+@@ -36,7 +36,8 @@ need_wayland = flavors_str.contains('wayland-')
+ need_null = flavors_str.contains('null-')
+ need_gl = flavors_str.contains('-gl')
+ need_glesv2 = flavors_str.contains('-glesv2')
+-need_egl = need_drm or need_wayland or need_glesv2 or need_null or flavors_str.contains('-egl')
++need_fbdev = flavors_str.contains('fbdev-')
++need_egl = need_fbdev or need_drm or need_wayland or need_glesv2 or need_null or flavors_str.contains('-egl')
+ need_glx = flavors.contains('x11-gl')
+ need_win32 = flavors_str.contains('win32-')
+ need_wgl = 'win32-gl' in flavors
+diff --git a/meson_options.txt b/meson_options.txt
+index 4f9b258..55ebf4a 100644
+--- a/meson_options.txt
++++ b/meson_options.txt
+@@ -2,6 +2,7 @@ option('flavors', type : 'array',
+        choices : [
+            'dispmanx-glesv2',
+            'drm-gl',
++           'fbdev-glesv2',
+            'drm-glesv2',
+            'null-gl',
+            'null-glesv2',
+diff --git a/src/main.cpp b/src/main.cpp
+index 3d6fff8..18faae3 100644
+--- a/src/main.cpp
++++ b/src/main.cpp
+@@ -47,6 +47,8 @@
+ #include "native-state-dispmanx.h"
+ #elif GLMARK2_USE_WIN32
+ #include "native-state-win32.h"
++#elif GLMARK2_USE_FBDEV
++#include "native-state-fbdev.h"
+ #elif GLMARK2_USE_NULL
+ #include "native-state-null.h"
+ #endif
+@@ -172,6 +174,8 @@ main(int argc, char *argv[])
+     NativeStateDispmanx native_state;
+ #elif GLMARK2_USE_WIN32
+     NativeStateWin32 native_state;
++#elif GLMARK2_USE_FBDEV
++    NativeStateFbdev native_state;
+ #elif GLMARK2_USE_NULL
+     NativeStateNull native_state;
+ #endif
+diff --git a/src/meson.build b/src/meson.build
+index 4196de0..de79c0f 100644
+--- a/src/meson.build
++++ b/src/meson.build
+@@ -84,6 +84,21 @@ if cpp.get_id() == 'msvc'
+         )
+ endif    
+ 
++if need_fbdev
++    native_fbdev_lib = static_library(
++        'native-fbdev',
++        'native-state-fbdev.cpp',
++        dependencies: [libmatrix_headers_dep],
++        )
++
++    native_fbdev_dep = declare_dependency(
++        link_with: native_fbdev_lib,
++        compile_args: ['-DGLMARK2_USE_FBDEV'],
++        )
++else
++    native_fbdev_dep = declare_dependency()
++endif
++
+ if need_dispmanx
+     native_dispmanx_lib = static_library(
+         'native-dispmanx',
+@@ -327,6 +342,7 @@ endif
+ # Flavor info : [ binary, native, gl, wsi ]
+ flavor_info = {
+   'dispmanx-glesv2' : ['glmark2-es2-dispmanx', native_dispmanx_dep, gl_glesv2_dep, wsi_egl_dep],
++  'fbdev-glesv2' : ['glmark2-es2-fbdev', native_fbdev_dep, gl_glesv2_dep, wsi_egl_dep],
+   'drm-gl' : ['glmark2-drm', native_drm_dep, gl_gl_dep, wsi_egl_dep],
+   'drm-glesv2' : ['glmark2-es2-drm', native_drm_dep, gl_glesv2_dep, wsi_egl_dep],
+   'gbm-gl' : ['glmark2-gbm', native_gbm_dep, gl_gl_dep, wsi_egl_dep],
+diff --git a/src/native-state-fbdev.cpp b/src/native-state-fbdev.cpp
+new file mode 100644
+index 0000000..13da659
+--- /dev/null
++++ b/src/native-state-fbdev.cpp
+@@ -0,0 +1,76 @@
++/* fbdev native state for the ARM Mali Utgard fbdev EGL (SM-T280 port). */
++#include "native-state-fbdev.h"
++#include "log.h"
++
++#include <fcntl.h>
++#include <linux/fb.h>
++#include <sys/ioctl.h>
++#include <unistd.h>
++
++bool
++NativeStateFbdev::init_display()
++{
++    int fd = open("/dev/fb0", O_RDONLY);
++    struct fb_var_screeninfo var;
++    if (fd < 0 || ioctl(fd, FBIOGET_VSCREENINFO, &var) < 0) {
++        Log::error("Cannot query /dev/fb0\n");
++        if (fd >= 0)
++            close(fd);
++        return false;
++    }
++    close(fd);
++    fb_width_ = var.xres;
++    fb_height_ = var.yres;
++    signal(SIGINT, &NativeStateFbdev::quit_handler);
++    return true;
++}
++
++void*
++NativeStateFbdev::display()
++{
++    return nullptr;
++}
++
++bool
++NativeStateFbdev::create_window(WindowProperties const& properties)
++{
++    properties_ = properties;
++    if (properties_.fullscreen || properties_.width <= 0 || properties_.height <= 0) {
++        properties_.width = fb_width_;
++        properties_.height = fb_height_;
++    }
++    fbwin_.width = properties_.width;
++    fbwin_.height = properties_.height;
++    return true;
++}
++
++void*
++NativeStateFbdev::window(WindowProperties& properties)
++{
++    properties = properties_;
++    return &fbwin_;
++}
++
++void
++NativeStateFbdev::visible(bool /*v*/)
++{
++}
++
++volatile std::sig_atomic_t NativeStateFbdev::should_quit_(false);
++
++void
++NativeStateFbdev::quit_handler(int /*signo*/)
++{
++    should_quit_ = true;
++}
++
++bool
++NativeStateFbdev::should_quit()
++{
++    return should_quit_;
++}
++
++void
++NativeStateFbdev::flip()
++{
++}
+diff --git a/src/native-state-fbdev.h b/src/native-state-fbdev.h
+new file mode 100644
+index 0000000..a23f41b
+--- /dev/null
++++ b/src/native-state-fbdev.h
+@@ -0,0 +1,29 @@
++/* fbdev native state for the ARM Mali Utgard fbdev EGL (SM-T280 port). */
++#ifndef GLMARK2_NATIVE_STATE_FBDEV_H_
++#define GLMARK2_NATIVE_STATE_FBDEV_H_
++
++#include "native-state.h"
++#include <csignal>
++
++class NativeStateFbdev : public NativeState
++{
++public:
++    bool init_display() override;
++    void* display() override;
++    bool create_window(WindowProperties const& properties) override;
++    void* window(WindowProperties& properties) override;
++    void visible(bool v) override;
++    bool should_quit() override;
++    void flip() override;
++
++private:
++    static void quit_handler(int signum);
++    static volatile std::sig_atomic_t should_quit_;
++
++    struct { unsigned short width, height; } fbwin_ {0, 0};
++    int fb_width_ {0};
++    int fb_height_ {0};
++    WindowProperties properties_;
++};
++
++#endif

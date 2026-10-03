@@ -11,13 +11,14 @@ affiliated with Samsung or Debian. **Use at your own risk.**
 | Feature | State |
 |---|---|
 | Boot (signed boot image + initramfs, root on internal `userdata`) | works |
-| Display (Xorg fbdev + XFCE, rotated 180°) | works, software rendering only |
+| Display (Xorg fbdev + XFCE, rotated 180°) | works, software rendering (desktop) |
+| GPU (Mali-400 MP, OpenGL ES 2.0) | works for full-screen fbdev GLES apps with your own Mali r6p2 blob, see [docs/gpu.md](docs/gpu.md) |
 | Touchscreen | works |
 | Wi-Fi (SC2331) | works; panel applet (wpa_gui) to scan and join networks; needs the firmware loader from your own Android system |
 | USB networking (RNDIS) + serial console (ACM) | works, survives cable replug / PC re-enumeration (tablet 192.168.7.2, PC gets 192.168.7.10-99) |
 | On-screen keyboard (onboard) | works: docked at the bottom, shown when a text field is focused |
 | Screen rotation | portrait / landscape via `sm-t280-rotate` or the XFCE menu (restarts the session) |
-| Audio, camera, Bluetooth, GPU acceleration, suspend | not done |
+| Audio, camera, Bluetooth, accelerated desktop, suspend | not done |
 
 ## What you need
 
