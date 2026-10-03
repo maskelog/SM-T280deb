@@ -29,8 +29,8 @@ KREL=$(strings "$OUT/kernel/Image" | sed -n 's/^Linux version \([^ ]*\) .*/\1/p'
 # lib -> usr/lib with real directories; create parents with mkdir -p instead.
 put() { mkdir -p "$(dirname "${@: -1}")"; install "$@"; }
 
-PKGS=sysvinit-core,sysv-rc,initscripts,orphan-sysvinit-scripts,udev,kmod,procps,iproute2,ifupdown,iputils-ping,openssh-server,sudo,dnsmasq-base,wpasupplicant,iw,wireless-regdb,ca-certificates,nano,less,busybox-static,e2fsprogs,util-linux,ntpsec-ntpdate,locales,tzdata
-[ "$DESKTOP" = 1 ] && PKGS=$PKGS,xserver-xorg-core,xserver-xorg-video-fbdev,xserver-xorg-input-libinput,xserver-xorg-legacy,xinit,x11-xserver-utils,xinput,xfce4-session,xfwm4,xfce4-panel,xfdesktop4,xfce4-settings,xfce4-terminal,thunar,dbus-x11,onboard,onboard-data,gsettings-desktop-schemas,at-spi2-core,gir1.2-atspi-2.0,xdg-utils,libglib2.0-bin,dconf-gsettings-backend,dconf-service,wpagui,elementary-xfce-icon-theme,qt5-gtk-platformtheme,fonts-dejavu-core,fonts-nanum,adwaita-icon-theme
+PKGS=sysvinit-core,sysv-rc,initscripts,orphan-sysvinit-scripts,udev,kmod,procps,iproute2,ifupdown,iputils-ping,openssh-server,sudo,dnsmasq-base,wpasupplicant,iw,wireless-regdb,ca-certificates,nano,less,busybox-static,e2fsprogs,util-linux,ntpsec-ntpdate,locales,tzdata,python3
+[ "$DESKTOP" = 1 ] && PKGS=$PKGS,xserver-xorg-core,xserver-xorg-video-fbdev,xserver-xorg-input-libinput,xserver-xorg-legacy,xinit,x11-xserver-utils,xinput,xfce4-session,xfwm4,xfce4-panel,xfdesktop4,xfce4-settings,xfce4-terminal,thunar,dbus-x11,onboard,onboard-data,gsettings-desktop-schemas,at-spi2-core,gir1.2-atspi-2.0,xdg-utils,libglib2.0-bin,dconf-gsettings-backend,dconf-service,wpagui,elementary-xfce-icon-theme,qt5-gtk-platformtheme,fonts-dejavu-core,fonts-nanum,adwaita-icon-theme,elogind,libpam-elogind,polkitd,upower,xfce4-power-manager,xfce4-screensaver,python3-gi,gir1.2-gtk-3.0
 
 # Never delete through leftover bind mounts (/dev, /proc, /sys) of an interrupted run.
 if grep -q " $ROOT/" /proc/mounts; then
@@ -95,6 +95,18 @@ else
     echo "NOTE: ANDROID_SYSTEM not set - Wi-Fi firmware loader not included" >&2
 fi
 
+# systemd-sysusers locks /etc/passwd with OFD locks (Linux >= 3.15): on the
+# tablet it fails, so later package installs there would break. Divert it to
+# a groupadd/useradd based replacement.
+chroot "$ROOT" dpkg-divert --local --rename --add /usr/bin/systemd-sysusers > /dev/null
+install -m 755 "$F/compat/systemd-sysusers" "$ROOT/usr/bin/systemd-sysusers"
+
+# Power key daemon: short press sleep (early suspend) / long press power menu
+install -m 755 "$F/power/sm-t280-powerkey" "$F/power/sm-t280-power-action" "$ROOT/usr/local/sbin/"
+install -m 755 "$F/power/sm-t280-power" "$ROOT/etc/init.d/sm-t280-power"
+put -m 644 "$F/power/power.conf" "$ROOT/etc/sm-t280/power.conf"
+chroot "$ROOT" update-rc.d sm-t280-power defaults > /dev/null
+
 # Kernel module (Wi-Fi driver)
 put -m 644 "$OUT/kernel/sprdwl.ko" "$ROOT/lib/modules/$KREL/extra/sprdwl.ko"
 chroot "$ROOT" depmod -a "$KREL" 2>/dev/null
@@ -121,6 +133,18 @@ if [ "$DESKTOP" = 1 ]; then
     install -m 644 -o 1000 -g 1000 "$F/wifi/wpa_gui-autostart.desktop" "$ROOT/home/debian/.config/autostart/wpa_gui.desktop"
     put -m 644 -o 1000 -g 1000 "$F/display/xsettings.xml"         "$ROOT/home/debian/.config/xfce4/xfconf/xfce-perchannel-xml/xsettings.xml"
     chown -R 1000:1000 "$ROOT/home/debian/.config"
+    # Power: menu + settings (GTK), elogind ignores the key, polkit lets the
+    # init-started session power off/reboot, power manager + lock screen config
+    install -m 755 "$F/power/sm-t280-power-menu" "$F/power/sm-t280-power-settings" "$ROOT/usr/local/bin/"
+    install -m 644 "$F"/power/sm-t280-power-*.desktop "$ROOT/usr/share/applications/"
+    visudo -c -q -f "$F/power/92-sm-t280-power.sudoers"
+    install -m 440 "$F/power/92-sm-t280-power.sudoers" "$ROOT/etc/sudoers.d/92-sm-t280-power"
+    put -m 644 "$F/power/10-sm-t280-power.conf" "$ROOT/etc/elogind/logind.conf.d/10-sm-t280-power.conf"
+    put -m 644 "$F/power/50-sm-t280-power.rules" "$ROOT/etc/polkit-1/rules.d/50-sm-t280-power.rules"
+    for c in xfce4-power-manager xfce4-screensaver; do
+        install -m 644 -o 1000 -g 1000 "$F/power/$c.xml" \
+            "$ROOT/home/debian/.config/xfce4/xfconf/xfce-perchannel-xml/$c.xml"
+    done
     chroot "$ROOT" update-rc.d sm-t280-display defaults > /dev/null
 fi
 

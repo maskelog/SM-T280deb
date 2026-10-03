@@ -1,0 +1,252 @@
+#!/usr/bin/python3
+"""Power key handler for the SM-T280 (runs as root from /etc/init.d/sm-t280-power).
+
+The vendor kernel uses Android early suspend: writing "mem" to
+/sys/power/state turns the panel, touch and backlight off at once, and the
+SoC enters deep sleep as soon as no wakelock is held (a connected USB cable
+holds one). After a wakeup the screen stays off until "on" is written, which
+this daemon does when the power key is pressed again.
+
+Actions are read on every key press from /etc/sm-t280/power.conf and then
+~/.config/sm-t280/power.conf of the desktop user (see sm-t280-power-settings):
+  SHORT_PRESS = sleep | lock | menu | nothing
+  LONG_PRESS  = menu | poweroff | nothing
+  LOCK_ON_SLEEP = yes | no
+SIGUSR1 / SIGUSR2 (sm-t280-power-action) request sleep / lock from the desktop.
+"""
+import os
+import pwd
+import select
+import signal
+import struct
+import subprocess
+import sys
+import time
+
+EV_KEY, KEY_POWER = 1, 116
+EVENT = struct.Struct("llHHi")          # struct input_event on 32-bit ARM
+LONG_PRESS_SEC = 1.0
+SYS_STATE = "/sys/power/state"
+PIDFILE = "/run/sm-t280-powerkey.pid"
+CHOICES = {
+    "SHORT_PRESS": ("sleep", "lock", "menu", "nothing"),
+    "LONG_PRESS": ("menu", "poweroff", "nothing"),
+    "LOCK_ON_SLEEP": ("yes", "no"),
+}
+DEFAULTS = {"SHORT_PRESS": "sleep", "LONG_PRESS": "menu", "LOCK_ON_SLEEP": "yes"}
+
+
+def log(msg):
+    try:
+        with open("/dev/kmsg", "w") as k:
+            k.write("sm-t280-powerkey: %s\n" % msg)
+    except OSError:
+        pass
+
+
+def find_keypad():
+    for name in sorted(os.listdir("/sys/class/input")):
+        if not name.startswith("event"):
+            continue
+        try:
+            with open("/sys/class/input/%s/device/name" % name) as f:
+                if f.read().strip() == "sci-keypad":
+                    return "/dev/input/" + name
+        except OSError:
+            pass
+    return None
+
+
+def desktop_user():
+    """(pwd entry, environment) of the running XFCE session, or (None, None)."""
+    for pid in filter(str.isdigit, os.listdir("/proc")):
+        try:
+            with open("/proc/%s/comm" % pid) as f:
+                if f.read().strip() != "xfce4-session":
+                    continue
+            st = os.stat("/proc/" + pid)
+            with open("/proc/%s/environ" % pid, "rb") as f:
+                env = dict(v.split("=", 1) for v in f.read().decode(errors="replace").split("\0") if "=" in v)
+        except OSError:
+            continue
+        pw = pwd.getpwuid(st.st_uid)
+        keep = ("DISPLAY", "DBUS_SESSION_BUS_ADDRESS", "XAUTHORITY", "LANG", "XDG_RUNTIME_DIR")
+        env = {k: env[k] for k in keep if k in env}
+        env.update(HOME=pw.pw_dir, USER=pw.pw_name, LOGNAME=pw.pw_name,
+                   PATH="/usr/local/bin:/usr/bin:/bin")
+        return pw, env
+    return None, None
+
+
+def read_config():
+    conf = dict(DEFAULTS)
+    pw, _ = desktop_user()
+    files = ["/etc/sm-t280/power.conf"]
+    home = pw.pw_dir if pw else "/home/debian"
+    files.append(os.path.join(home, ".config/sm-t280/power.conf"))
+    for path in files:
+        try:
+            with open(path) as f:
+                for line in f:
+                    key, sep, val = line.strip().partition("=")
+                    key, val = key.strip(), val.strip().strip("\"'")
+                    if sep and val in CHOICES.get(key, ()):
+                        conf[key] = val
+        except OSError:
+            pass
+    return conf
+
+
+def has_password(user):
+    try:
+        with open("/etc/shadow") as f:
+            for line in f:
+                fields = line.split(":")
+                if fields[0] == user:
+                    return fields[1] not in ("", "*") and not fields[1].startswith("!")
+    except OSError:
+        pass
+    return False
+
+
+def as_user(pw, env, cmd, **kw):
+    def drop():
+        os.initgroups(pw.pw_name, pw.pw_gid)
+        os.setgid(pw.pw_gid)
+        os.setuid(pw.pw_uid)
+        os.chdir(pw.pw_dir)
+    return subprocess.run(cmd, env=env, preexec_fn=drop, **kw)
+
+
+class PowerKey:
+    def __init__(self):
+        self.asleep = False
+
+    def set_state(self, state):
+        with open(SYS_STATE, "w") as f:
+            f.write(state)
+
+    def lock(self):
+        """Password lock (xfce4-screensaver). Returns False if not possible."""
+        pw, env = desktop_user()
+        if not pw:
+            return False
+        if not has_password(pw.pw_name):
+            log("no password set for %s: not locking (run 'sudo passwd %s')" % (pw.pw_name, pw.pw_name))
+            return False
+        cmd = ["xfce4-screensaver-command", "--lock"]
+        r = as_user(pw, env, cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
+        if r.returncode != 0:      # saver not running yet: start it, then lock
+            as_user(pw, env, ["sh", "-c", "xfce4-screensaver >/dev/null 2>&1 &"], timeout=10)
+            time.sleep(1.5)
+            r = as_user(pw, env, cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
+        return r.returncode == 0
+
+    def sleep(self, conf):
+        if conf["LOCK_ON_SLEEP"] == "yes" and self.lock():
+            time.sleep(0.5)        # let the lock screen draw before the panel goes off
+        self.set_state("mem")
+        self.asleep = True
+        log("sleep")
+
+    def wake(self):
+        self.set_state("on")
+        self.asleep = False
+        log("wake")
+
+    def menu(self, conf):
+        pw, env = desktop_user()
+        if not pw:
+            return
+        try:
+            r = as_user(pw, env, ["sm-t280-power-menu"], stdout=subprocess.PIPE,
+                        stderr=subprocess.DEVNULL, text=True, timeout=120)
+        except subprocess.TimeoutExpired:
+            return
+        self.run(r.stdout.strip(), conf, from_menu=True)
+
+    def run(self, action, conf, from_menu=False):
+        if action == "sleep":
+            self.sleep(conf)
+        elif action == "lock":
+            self.lock()
+        elif action == "menu" and not from_menu:
+            self.menu(conf)
+        elif action == "poweroff":
+            log("power off")
+            subprocess.run(["/sbin/shutdown", "-h", "now"])
+        elif action == "reboot":
+            log("reboot")
+            subprocess.run(["/sbin/shutdown", "-r", "now"])
+
+    def loop(self, dev):
+        fd = os.open(dev, os.O_RDONLY)
+        sig_r, sig_w = os.pipe()
+        os.set_blocking(sig_w, False)
+        for signum, tag in ((signal.SIGUSR1, b"s"), (signal.SIGUSR2, b"l")):
+            signal.signal(signum, lambda *_, t=tag: os.write(sig_w, t))
+        pressed_at = None
+        while True:
+            timeout = None
+            if pressed_at is not None:
+                timeout = max(0.0, pressed_at + LONG_PRESS_SEC - time.monotonic())
+            ready, _, _ = select.select([fd, sig_r], [], [], timeout)
+            if sig_r in ready:
+                for tag in os.read(sig_r, 64):
+                    if tag == ord("s") and not self.asleep:
+                        self.sleep(read_config())
+                    elif tag == ord("l"):
+                        self.lock()
+                continue
+            if not ready:                              # held long enough
+                pressed_at = None
+                conf = read_config()
+                if self.asleep:
+                    self.wake()
+                else:
+                    self.run(conf["LONG_PRESS"], conf)
+                self.drain(fd)
+                continue
+            data = os.read(fd, EVENT.size * 64)
+            for off in range(0, len(data) - EVENT.size + 1, EVENT.size):
+                _, _, etype, code, value = EVENT.unpack_from(data, off)
+                if etype != EV_KEY or code != KEY_POWER:
+                    continue
+                if value == 1:
+                    pressed_at = time.monotonic()
+                elif value == 0 and pressed_at is not None:
+                    pressed_at = None
+                    conf = read_config()
+                    if self.asleep:
+                        self.wake()
+                    else:
+                        self.run(conf["SHORT_PRESS"], conf)
+                    self.drain(fd)
+                    break
+
+    @staticmethod
+    def drain(fd):
+        """Drop key events queued while an action ran (e.g. the menu was open)."""
+        while select.select([fd], [], [], 0)[0]:
+            os.read(fd, EVENT.size * 64)
+
+
+def main():
+    dev = None
+    for _ in range(30):
+        dev = find_keypad()
+        if dev:
+            break
+        time.sleep(1)
+    if not dev:
+        log("sci-keypad not found")
+        return 1
+    log("watching %s" % dev)
+    with open(PIDFILE, "w") as f:
+        f.write("%d\n" % os.getpid())
+    PowerKey().loop(dev)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

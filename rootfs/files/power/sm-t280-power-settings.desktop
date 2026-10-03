@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Power button
+Name[ko]=전원 버튼 설정
+Comment=Choose what the power key does (sleep, lock, power menu)
+Comment[ko]=전원 키 동작 선택 (절전, 잠금, 전원 메뉴)
+Exec=sm-t280-power-settings
+Icon=preferences-system-power
+Categories=Settings;DesktopSettings;

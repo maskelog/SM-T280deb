@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Lock only on request (power key); unlock with the on-screen keyboard. -->
+<channel name="xfce4-screensaver" version="1.0">
+  <property name="saver" type="empty">
+    <property name="enabled" type="bool" value="false"/>
+    <property name="idle-activation" type="empty">
+      <property name="enabled" type="bool" value="false"/>
+    </property>
+  </property>
+  <property name="lock" type="empty">
+    <property name="enabled" type="bool" value="true"/>
+    <property name="saver-activation" type="empty">
+      <property name="enabled" type="bool" value="false"/>
+    </property>
+    <property name="embedded-keyboard" type="empty">
+      <property name="enabled" type="bool" value="true"/>
+      <property name="command" type="string" value="onboard --xid"/>
+    </property>
+  </property>
+</channel>

@@ -18,7 +18,8 @@ affiliated with Samsung or Debian. **Use at your own risk.**
 | USB networking (RNDIS) + serial console (ACM) | works, survives cable replug / PC re-enumeration (tablet 192.168.7.2, PC gets 192.168.7.10-99) |
 | On-screen keyboard (onboard) | works: docked at the bottom, shown when a text field is focused |
 | Screen rotation | portrait / landscape via `sm-t280-rotate` or the XFCE menu (restarts the session) |
-| Audio, camera, Bluetooth, accelerated desktop, suspend | not done |
+| Power key | short press: sleep (screen off, deep sleep without USB), press again to wake; long press: power menu (sleep, lock, restart, power off). Selectable in Settings → "Power button" |
+| Audio, camera, Bluetooth, accelerated desktop | not done |
 
 ## What you need
 

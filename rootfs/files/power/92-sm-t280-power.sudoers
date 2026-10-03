@@ -1,0 +1,2 @@
+# Desktop power menu: sleep / lock through the power-key daemon
+debian ALL=(root) NOPASSWD: /usr/local/sbin/sm-t280-power-action sleep, /usr/local/sbin/sm-t280-power-action lock

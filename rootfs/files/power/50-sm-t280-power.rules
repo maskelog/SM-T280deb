@@ -1,0 +1,10 @@
+// SM-T280: the desktop is started by an init script, not a login manager, so
+// it has no elogind session and polkit would refuse suspend/power-off/reboot.
+// Allow these for the tablet's user (member of the sudo group).
+polkit.addRule(function(action, subject) {
+    if (action.id.indexOf("org.freedesktop.login1.") === 0 &&
+        /^org\.freedesktop\.login1\.(suspend|hibernate|power-off|reboot|set-wall-message|inhibit-handle-power-key|inhibit-handle-suspend-key|inhibit-block-sleep|inhibit-delay-sleep|inhibit-block-idle)/.test(action.id) &&
+        subject.isInGroup("sudo")) {
+        return polkit.Result.YES;
+    }
+});

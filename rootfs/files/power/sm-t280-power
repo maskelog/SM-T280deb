@@ -1,0 +1,28 @@
+#!/bin/sh
+### BEGIN INIT INFO
+# Provides:          sm-t280-power
+# Required-Start:    $local_fs $remote_fs udev
+# Required-Stop:
+# Default-Start:     2 3 4 5
+# Default-Stop:      0 1 6
+# Short-Description: Power key: sleep / lock / power menu (sm-t280-powerkey)
+### END INIT INFO
+PID=/run/sm-t280-powerkey.pid
+case "$1" in
+start)
+    start-stop-daemon --start --quiet --background --pidfile "$PID" \
+        --exec /usr/bin/python3 --startas /usr/local/sbin/sm-t280-powerkey
+    ;;
+stop)
+    start-stop-daemon --stop --quiet --retry 3 --pidfile "$PID" --remove-pidfile
+    # never leave the panel in early suspend
+    echo on > /sys/power/state 2>/dev/null || true
+    ;;
+restart|force-reload)
+    "$0" stop; "$0" start
+    ;;
+*)
+    echo "usage: $0 start|stop|restart" >&2; exit 2
+    ;;
+esac
+exit 0

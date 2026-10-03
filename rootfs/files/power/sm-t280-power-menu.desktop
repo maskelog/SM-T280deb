@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Power menu
+Name[ko]=전원 메뉴
+Comment=Sleep, lock, restart or power off
+Comment[ko]=절전, 잠금, 다시 시작, 전원 끄기
+Exec=sm-t280-power-menu --run
+Icon=system-shutdown
+Categories=System;

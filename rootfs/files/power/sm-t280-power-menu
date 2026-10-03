@@ -1,0 +1,71 @@
+#!/usr/bin/python3
+"""Touch-friendly power menu. Prints the chosen action (sleep, lock, reboot,
+poweroff) on stdout for sm-t280-powerkey; prints nothing when cancelled.
+Run from the desktop menu it carries the action out itself."""
+import os
+import subprocess
+import sys
+
+import gi
+gi.require_version("Gtk", "3.0")
+from gi.repository import Gtk  # noqa: E402
+
+ACTIONS = [
+    ("sleep", "절전  Sleep", "system-suspend"),
+    ("lock", "화면 잠금  Lock", "system-lock-screen"),
+    ("reboot", "다시 시작  Restart", "system-reboot"),
+    ("poweroff", "전원 끄기  Power off", "system-shutdown"),
+]
+
+
+def main():
+    standalone = "--run" in sys.argv[1:]
+    choice = []
+    win = Gtk.Window(title="전원 Power")
+    win.set_position(Gtk.WindowPosition.CENTER_ALWAYS)
+    win.set_keep_above(True)
+    win.set_decorated(False)
+    win.set_modal(True)
+    box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+    box.set_border_width(24)
+    win.add(box)
+
+    def pick(_button, action):
+        choice.append(action)
+        win.destroy()
+
+    for action, label, icon in ACTIONS:
+        b = Gtk.Button(label=label)
+        b.set_image(Gtk.Image.new_from_icon_name(icon, Gtk.IconSize.DIALOG))
+        b.set_always_show_image(True)
+        b.set_size_request(420, 96)
+        b.connect("clicked", pick, action)
+        box.pack_start(b, False, False, 0)
+    cancel = Gtk.Button(label="취소  Cancel")
+    cancel.set_size_request(420, 72)
+    cancel.connect("clicked", lambda *_: win.destroy())
+    box.pack_start(cancel, False, False, 0)
+
+    win.connect("destroy", Gtk.main_quit)
+    win.connect("key-press-event",
+                lambda _w, ev: ev.keyval == 0xff1b and win.destroy())  # Escape
+    win.show_all()
+    win.present()
+    Gtk.main()
+
+    if not choice:
+        return 0
+    if not standalone:
+        print(choice[0])
+        return 0
+    # Started from the desktop menu: the daemon is not involved.
+    if choice[0] in ("reboot", "poweroff"):
+        subprocess.run(["loginctl", choice[0]])
+    else:   # sleep / lock go through the power-key daemon
+        subprocess.run(["sudo", "-n", "/usr/local/sbin/sm-t280-power-action", choice[0]])
+    return 0
+
+
+if __name__ == "__main__":
+    os.environ.setdefault("GDK_BACKEND", "x11")
+    sys.exit(main())

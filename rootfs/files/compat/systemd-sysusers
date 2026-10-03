@@ -1,0 +1,59 @@
+#!/bin/sh
+# systemd-sysusers replacement for the 3.10 kernel: the real tool locks
+# /etc/passwd with OFD locks (Linux >= 3.15) and fails with EINVAL, which
+# breaks the postinst of dbus, polkitd, ... Creates the same users/groups with
+# shadow's groupadd/useradd. Supports the u/g/m lines Debian packages ship.
+set -eu
+dirs="/etc/sysusers.d /run/sysusers.d /usr/local/lib/sysusers.d /usr/lib/sysusers.d"
+files=""
+for a in "$@"; do
+    case "$a" in
+        --root=/|--root=) ;;
+        --root=*) exec /usr/bin/systemd-sysusers.distrib "$@" ;;   # offline root: real tool works
+        -*) ;;
+        */*) files="$files $a" ;;
+        *) for d in $dirs; do [ -f "$d/$a" ] && { files="$files $d/$a"; break; }; done ;;
+    esac
+done
+[ -n "$files" ] || files=$(for d in $dirs; do ls "$d"/*.conf 2>/dev/null; done)
+
+has_group() { getent group "$1" > /dev/null; }
+has_user() { getent passwd "$1" > /dev/null; }
+
+line() {   # type name id gecos home shell
+    t=$1; n=$2; id=${3:--}; gecos=${4:--}; home=${5:--}; shell=${6:--}
+    case "$t" in
+    g)
+        has_group "$n" && return 0
+        case "$id" in [0-9]*) groupadd --system -g "$id" "$n" ;; *) groupadd --system "$n" ;; esac
+        ;;
+    u)
+        has_user "$n" && return 0
+        uid=${id%%:*}; grp=""
+        case "$id" in *:*) grp=${id#*:} ;; esac
+        set -- --system --no-create-home --shell "$( [ "$shell" = - ] && echo /usr/sbin/nologin || echo "$shell")" \
+               --home-dir "$( [ "$home" = - ] && echo / || echo "$home")"
+        [ "$gecos" = - ] || set -- "$@" --comment "$gecos"
+        case "$uid" in [0-9]*) set -- "$@" -u "$uid" ;; esac
+        if [ -n "$grp" ]; then
+            set -- "$@" -g "$grp"
+        elif has_group "$n"; then
+            set -- "$@" -g "$n"
+        else
+            set -- "$@" --user-group
+        fi
+        useradd "$@" "$n"
+        ;;
+    m)
+        has_group "$id" || groupadd --system "$id"
+        usermod -a -G "$id" "$n"
+        ;;
+    esac
+}
+
+for f in $files; do
+    while IFS= read -r l || [ -n "$l" ]; do
+        case "$l" in ''|'#'*) continue ;; esac
+        eval "line $l"
+    done < "$f"
+done

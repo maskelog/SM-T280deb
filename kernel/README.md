@@ -14,6 +14,7 @@ verifies both; `build.sh` applies the patches and `debian.fragment`.
 | 0009 | FunctionFS AIO (`aio_read`/`aio_write`), based on upstream 2e4c7553cd6f, with fixes for short-read data exposure, mm lifetime, cancel/free races and sync kiocbs |
 | 0010 | sprdfb: accept `FBIOPUT_VSCREENINFO` with a smaller `yres_virtual` so Xorg fbdev can start |
 | 0011 | Mali-400: the vendor r6p0 driver (API 800) is replaced by ARM's GPL r6p2-01rel0 driver (API 900, `downloads/mali-utgard-r6p2.tgz`); the patch adds the vendor sc8830 platform glue and limits external-memory binds to fb0. See [docs/gpu.md](../docs/gpu.md) |
+| 0012 | sprdfb: `skip_vt_switch`, so the suspend console switch does not kill Xorg (fbdev cannot re-enter its VT) |
 
 0007 (an Android-only cmdline fragment) is intentionally not included.
 The Binder, mmap, ambient-capability and AIO patches came from an Android 12

@@ -1,0 +1,9 @@
+#!/bin/sh
+# Ask sm-t280-powerkey to sleep or lock (used by the desktop power menu).
+set -eu
+pid=$(cat /run/sm-t280-powerkey.pid)
+case "${1:-}" in
+    sleep) kill -USR1 "$pid" ;;
+    lock)  kill -USR2 "$pid" ;;
+    *) echo "usage: $0 sleep|lock" >&2; exit 2 ;;
+esac

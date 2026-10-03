@@ -1,0 +1,18 @@
+sprdfb: skip the VT switch around suspend
+
+On suspend the kernel moves to VT 63 and back. Xorg fbdev then re-enters
+its VT with FBIOPUT_VSCREENINFO, which sprdfb rejects, and the server exits
+(screen frozen, touch dead after waking). The panel needs no console
+switch, so tell the PM core to skip it.
+
+--- a/drivers/video/sprdfb/sprdfb_main.c
++++ b/drivers/video/sprdfb/sprdfb_main.c
+@@ -211,6 +211,8 @@
+ 
+ 	fb->fbops = &sprdfb_ops;
+ 	fb->flags = FBINFO_DEFAULT;
++	/* Debian: no VT switch around suspend; Xorg fbdev cannot re-enter its VT on this panel */
++	fb->skip_vt_switch = true;
+ 
+ 	/* finish setting up the fb_info struct */
+ 	strncpy(fb->fix.id, "sprdfb", 16);

@@ -1,0 +1,111 @@
+#!/usr/bin/python3
+"""Choose what the power key does (writes ~/.config/sm-t280/power.conf,
+read by sm-t280-powerkey on every key press)."""
+import os
+import pwd
+import subprocess
+import sys
+
+import gi
+gi.require_version("Gtk", "3.0")
+from gi.repository import Gtk  # noqa: E402
+
+CONF = os.path.expanduser("~/.config/sm-t280/power.conf")
+DEFAULTS = {"SHORT_PRESS": "sleep", "LONG_PRESS": "menu", "LOCK_ON_SLEEP": "yes"}
+SHORT = [("sleep", "절전 (화면 끄기)  Sleep"), ("lock", "화면 잠금  Lock"),
+         ("menu", "전원 메뉴 표시  Power menu"), ("nothing", "아무것도 안 함  Nothing")]
+LONG = [("menu", "전원 메뉴 표시  Power menu"), ("poweroff", "바로 전원 끄기  Power off"),
+        ("nothing", "아무것도 안 함  Nothing")]
+
+
+def load():
+    conf = dict(DEFAULTS)
+    for path in ("/etc/sm-t280/power.conf", CONF):
+        try:
+            with open(path) as f:
+                for line in f:
+                    k, sep, v = line.strip().partition("=")
+                    if sep and k.strip() in conf:
+                        conf[k.strip()] = v.strip().strip("\"'")
+        except OSError:
+            pass
+    return conf
+
+
+def has_password():
+    """True unless the account is known to have no usable password."""
+    user = pwd.getpwuid(os.getuid()).pw_name
+    r = subprocess.run(["passwd", "-S", user], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+    fields = r.stdout.split()
+    return not (len(fields) > 1 and fields[1] in ("L", "NP"))
+
+
+def radio_group(box, title, options, current):
+    frame = Gtk.Frame(label=title)
+    inner = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+    inner.set_border_width(10)
+    frame.add(inner)
+    group, buttons = None, {}
+    for value, label in options:
+        b = Gtk.RadioButton.new_with_label_from_widget(group, label)
+        group = group or b
+        b.set_active(value == current)
+        inner.pack_start(b, False, False, 0)
+        buttons[value] = b
+    box.pack_start(frame, False, False, 0)
+    return buttons
+
+
+def main():
+    conf = load()
+    win = Gtk.Window(title="전원 버튼 설정  Power button")
+    win.set_default_size(520, -1)
+    win.set_position(Gtk.WindowPosition.CENTER)
+    box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+    box.set_border_width(16)
+    win.add(box)
+
+    short = radio_group(box, "짧게 누르기  Short press", SHORT, conf["SHORT_PRESS"])
+    long_ = radio_group(box, "길게 누르기 (1초)  Long press (1 s)", LONG, conf["LONG_PRESS"])
+    lock = Gtk.CheckButton(label="절전할 때 화면 잠금  Lock when going to sleep")
+    lock.set_active(conf["LOCK_ON_SLEEP"] == "yes")
+    box.pack_start(lock, False, False, 0)
+
+    if not has_password():
+        note = Gtk.Label()
+        note.set_line_wrap(True)
+        note.set_xalign(0)
+        note.set_markup("<b>비밀번호가 없어 잠금이 동작하지 않습니다.</b> 터미널에서 "
+                        "<tt>sudo passwd %s</tt> 로 비밀번호를 정하세요.\n"
+                        "No password is set, so locking is skipped. Set one with "
+                        "<tt>sudo passwd %s</tt>." % ((pwd.getpwuid(os.getuid()).pw_name,) * 2))
+        box.pack_start(note, False, False, 0)
+
+    buttons = Gtk.Box(spacing=8)
+    cancel = Gtk.Button(label="취소  Cancel")
+    save = Gtk.Button(label="저장  Save")
+    buttons.pack_end(save, False, False, 0)
+    buttons.pack_end(cancel, False, False, 0)
+    box.pack_start(buttons, False, False, 0)
+
+    def on_save(*_):
+        pick = lambda group: next(v for v, b in group.items() if b.get_active())  # noqa: E731
+        os.makedirs(os.path.dirname(CONF), exist_ok=True)
+        with open(CONF + ".tmp", "w") as f:
+            f.write("# written by sm-t280-power-settings\n")
+            f.write("SHORT_PRESS=%s\n" % pick(short))
+            f.write("LONG_PRESS=%s\n" % pick(long_))
+            f.write("LOCK_ON_SLEEP=%s\n" % ("yes" if lock.get_active() else "no"))
+        os.replace(CONF + ".tmp", CONF)
+        win.destroy()
+
+    save.connect("clicked", on_save)
+    cancel.connect("clicked", lambda *_: win.destroy())
+    win.connect("destroy", Gtk.main_quit)
+    win.show_all()
+    Gtk.main()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
