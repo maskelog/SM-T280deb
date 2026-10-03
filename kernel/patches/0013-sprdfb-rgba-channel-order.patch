@@ -1,0 +1,26 @@
+sprdfb: report the real 32 bpp channel order (R in the low byte)
+
+DISPC scans the layer out as ABGR (bytes R, G, B, A), but fb_var advertised
+red at bit 16 and blue at bit 0. Android ignored it; Xorg trusts it, so red
+and blue were swapped on the panel (red YouTube logo shown blue).
+
+--- a/drivers/video/sprdfb/sprdfb_main.c
++++ b/drivers/video/sprdfb/sprdfb_main.c
+@@ -265,14 +265,14 @@
+ 	fb->var.yoffset = 0;
+ 
+ 	/* only support two pixel format */
+-	if (dev->bpp == 32) { /* ABGR */
+-		fb->var.red.offset     = 16;
++	if (dev->bpp == 32) { /* ABGR: R in the lowest byte (DISPC layer format) */
++		fb->var.red.offset     = 0;
+ 		fb->var.red.length     = 8;
+ 		fb->var.red.msb_right  = 0;
+ 		fb->var.green.offset   = 8;
+ 		fb->var.green.length   = 8;
+ 		fb->var.green.msb_right = 0;
+-		fb->var.blue.offset    = 0;
++		fb->var.blue.offset    = 16;
+ 		fb->var.blue.length    = 8;
+ 		fb->var.blue.msb_right = 0;
+ 	} else { /*BGR*/
